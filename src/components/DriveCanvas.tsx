@@ -553,7 +553,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           steer: steerRef.current, gear: gearRef.current, hood: hoodRef.current,
           speed: Math.abs(s.v) * 3.6, color: vehicle.color, lever: leverUntil.current > now, now, dx, dy,
         })
-        // 후사경: 실제 거울 위치에 붙어 있어서, 고개를 돌려야 보인다
+        // 후사경: 실제 후사경 위치에 붙어 있어서, 고개를 돌려야 보인다
         for (const side of [1, -1] as const) {
           // 정면을 볼 때 왼쪽 위·오른쪽 위 모서리에 고정, 고개를 돌리면 운전석 내부와 함께 움직인다
           const mw = Math.round(w * 0.1)

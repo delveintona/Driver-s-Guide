@@ -53,11 +53,11 @@ export default function Compare() {
               <TopShape vehicle={v} x={0} yBottom={0} />
             </g>
             <text x={0.3} y={0.4} fontSize={0.32} fill="#fff">
-              차체 기준 좌우 여유 각 {(sideGap * 100).toFixed(0)} cm (거울 제외)
+              차체 기준 좌우 여유 각 {(sideGap * 100).toFixed(0)} cm (후사경 제외)
             </text>
           </svg>
         </div>
-        <p className="fineprint">거울 폭은 미확인 값이라 포함하지 않았습니다. 실제 여유는 이보다 작습니다. 차로 폭은 교육용 예시이며 도로마다 다릅니다.</p>
+        <p className="fineprint">후사경 폭은 미확인 값이라 포함하지 않았습니다. 실제 여유는 이보다 작습니다. 차로 폭은 교육용 예시이며 도로마다 다릅니다.</p>
       </section>
 
       <section className="card">

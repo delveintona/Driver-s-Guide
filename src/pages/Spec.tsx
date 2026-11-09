@@ -14,7 +14,7 @@ export default function Spec() {
   const rows: [string, string | null, string?][] = [
     ['전장', mm(d.length)],
     ['전폭 (차체)', mm(d.widthBody)],
-    ['전폭 (거울 포함)', mm(d.widthIncludingMirrors)],
+    ['전폭 (후사경 포함)', mm(d.widthIncludingMirrors)],
     ['전고', mm(d.height)],
     ['축거', mm(d.wheelbase), g.wheelbaseAssumed ? `도식용 가정 ${(g.wheelbase * 1000).toLocaleString()} mm` : undefined],
     ['앞 오버행', mm(d.frontOverhang), `도식용 가정 ${(g.frontOverhang * 1000).toLocaleString()} mm`],
