@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Vehicle } from '../data/vehicles'
 import { vehicleGeometry } from '../data/vehicles'
 import {
-  boxDepth, drawBox, drawPolyline3, fillPolygon3, project, projectD,
+  boxDepth, drawBox, drawPolyline3, fillPolygon3, project,
   type Box, type Camera, type Pt3,
 } from '../lib/render3d'
 import {
@@ -102,7 +102,7 @@ function wheelPoints(s: CarState, g: Geo): V2[][] {
 }
 
 const mirrorFwd = (g: Geo) => g.wheelbase + g.frontOverhang - 0.2
-const eyeOf = (s: CarState, g: Geo) => toWorld(s, g.wheelbase + g.frontOverhang - 1.3, 0.55)
+const eyeOf = (s: CarState, g: Geo) => toWorld(s, g.wheelbase + g.frontOverhang - 1.9, 0.3)
 const mirrorTips = (s: CarState, g: Geo) => {
   const side = g.W / 2 + g.mirrorOut
   return [toWorld(s, mirrorFwd(g), side), toWorld(s, mirrorFwd(g), -side)]
@@ -146,7 +146,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
 
   const car = useRef<CarState>({ ...START })
   const input = useRef({ gas: 0, key: 0, brake: false })
-  const gearRef = useRef<Gear>('N')
+  const gearRef = useRef<Gear>('D')
   const leverUntil = useRef(0)
   const steerRef = useRef(0)
   const look = useRef({ yaw: 0, pitch: 0 }) // yaw +: 왼쪽, pitch +: 위
@@ -158,7 +158,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const toastRef = useRef<{ text: string; until: number } | null>(null)
 
   const [steerUi, setSteerUi] = useState(0)
-  const [gearUi, setGearUi] = useState<Gear>('N')
+  const [gearUi, setGearUi] = useState<Gear>('D')
   const [showTrail, setShowTrail] = useState(true)
   const [showPredict, setShowPredict] = useState(true)
   const [showGuide, setShowGuide] = useState(true)
@@ -186,8 +186,8 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     steerRef.current = 0
     look.current = { yaw: 0, pitch: 0 }
     input.current = { gas: 0, key: 0, brake: false }
-    gearRef.current = 'N'
-    setGearUi('N')
+    gearRef.current = 'D'
+    setGearUi('D')
     judge.current = newJudge()
     wasOut.current = { wheel: false, body: false, mirror: false }
     setSteerUi(0)
@@ -399,7 +399,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         const p = eyeOf(s, g)
         Object.assign(cam, {
           x: p.x, y: p.y, z: Math.min(g.H - 0.25, g.H * 0.78 + 0.15),
-          yaw: s.yaw + look.current.yaw, pitch: 0.04 - look.current.pitch, f: w * 0.5,
+          yaw: s.yaw + look.current.yaw, pitch: 0.04 - look.current.pitch, f: w * 0.42,
         })
       }
       return cam
@@ -516,10 +516,9 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       const { w, h } = size
       ctx.clearRect(0, 0, w, h)
       const cam0 = makeCam(m)
-      drawWorld(ctx, cam0, m, { labels: true })
+      drawWorld(ctx, cam0, m, { labels: m !== 'cab' })
 
       if (m === 'cab') {
-        const g = geoRef.current
         const s = car.current
         const f = cam0.f
         const lk = look.current
@@ -531,15 +530,12 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         })
         // 후사경: 실제 거울 위치에 붙어 있어서, 고개를 돌려야 보인다
         for (const side of [1, -1] as const) {
-          const mp = toWorld(s, mirrorFwd(g), side * (g.W / 2 + g.mirrorOut * 0.5))
-          const pr = projectD(cam0, { x: mp.x, y: mp.y, z: g.H * 0.62 + 0.1 })
-          if (!pr) continue
-          const [px, py, d] = pr
-          const mw = Math.round(Math.min(w * 0.45, (f * 0.375) / Math.max(d, 0.5)))
-          const mh = Math.round(mw * 1.5)
-          const x0 = Math.round(px - mw / 2)
-          const y0 = Math.round(py - mh / 2)
-          if (x0 > w || x0 + mw < 0 || y0 > h || y0 + mh < 0 || mw < 12) continue
+          // 정면을 볼 때 왼쪽 위·오른쪽 위 모서리에 고정, 고개를 돌리면 운전석 내부와 함께 움직인다
+          const mw = Math.round(w * 0.1)
+          const mh = Math.round(h * 0.32)
+          const x0 = Math.round((side === 1 ? w * 0.025 : w * 0.875) + dx)
+          const y0 = Math.round((side === 1 ? h * 0.12 : h * 0.1) + dy)
+          if (x0 > w || x0 + mw < 0 || y0 > h || y0 + mh < 0) continue
           ctx.save()
           ctx.beginPath()
           ctx.roundRect(x0, y0, mw, mh, 6)
@@ -556,10 +552,6 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           ctx.strokeStyle = '#777'
           ctx.lineWidth = 1.2
           ctx.stroke()
-          ctx.font = '10px system-ui, sans-serif'
-          ctx.fillStyle = 'rgba(255,255,255,.8)'
-          ctx.textAlign = 'center'
-          ctx.fillText(side === 1 ? '좌 후사경' : '우 후사경', x0 + mw / 2, y0 + mh + 12)
         }
       }
 
@@ -637,6 +629,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     onPointerDown: (e: React.PointerEvent) => {
       ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
       input.current.gas = gearSign(gearRef.current)
+      if (gearRef.current === 'N') toastRef.current = { text: '기어가 중립(N)입니다. D(전진) 또는 R(후진)을 누르세요', until: performance.now() + 2200 }
     },
     onPointerUp: () => { input.current.gas = 0 },
     onPointerCancel: () => { input.current.gas = 0 },
@@ -771,7 +764,6 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           <button className="pedal brake" {...brake}>브레이크</button>
           <button className="pedal fwd" {...accel}>가속 ({gearUi === 'D' ? '전진' : gearUi === 'R' ? '후진' : '중립'})</button>
         </div>
-        <p className="cab-note">화면을 밀면 고개를 돌려 창·후사경을 볼 수 있어요 · 왼쪽 핸들, 오른쪽 기어·페달 · 거울·눈높이는 가정값</p>
       </div>
     )
   }
