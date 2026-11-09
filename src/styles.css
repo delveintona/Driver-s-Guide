@@ -163,3 +163,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .tile.disabled { opacity: .45; }
 .status .fail { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--bad); font-size: 13px; }
+
+/* 가로 화면: 스크롤되는 패널 */
+.cab-top { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+.cab-top::-webkit-scrollbar { display: none; }
+.cab-top > * { flex: none; }
+.cab-top .mini.on { background: var(--accent); color: #17200c; }
+.cab-status { max-height: 34dvh; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; }
+.dim-drawer { position: absolute; top: 44px; right: 8px; bottom: 8px; width: min(340px, 46%); z-index: 6; background: rgba(14,18,12,.96); border: 1px solid var(--line); border-radius: 12px; padding: 0 12px 12px; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
+.dim-drawer .drawer-head { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; padding: 10px 0 8px; background: rgba(14,18,12,.98); }
+.dim-drawer .spec-pop { background: transparent; padding: 0; }

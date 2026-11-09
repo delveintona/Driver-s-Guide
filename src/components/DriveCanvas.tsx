@@ -709,8 +709,6 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       )}
       {course.garage && <div className="small">확인선 {jui.touched ? '✔ 닿음 → 전진으로 나오세요' : '아직'}</div>}
       <div className="small goal">{jui.done ? '✔ 통과 (연습 기록, 공식 판정 아님)' : course.goal}</div>
-      <button className="mini" onClick={() => setShowSpec((v) => !v)}>{showSpec ? '닫기' : '코스 치수 입력/수정'}</button>
-      {showSpec && dimEditor}
     </div>
   )
 
@@ -754,8 +752,20 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           <button className="mini" onClick={() => { look.current = { yaw: 0, pitch: 0 } }}>시선 정면</button>
           <button className="mini" onClick={reset}>처음으로</button>
           {hudEl}
+          {course && (
+            <button className={showSpec ? 'mini on' : 'mini'} onClick={() => setShowSpec((v) => !v)}>치수 조정</button>
+          )}
         </div>
         {statusPanel && <div className="cab-status">{statusPanel}</div>}
+        {course && showSpec && (
+          <div className="dim-drawer">
+            <div className="drawer-head">
+              <b>코스 치수 조정</b>
+              <button className="mini" onClick={() => setShowSpec(false)}>닫기</button>
+            </div>
+            {dimEditor}
+          </div>
+        )}
         <div className="cab-wheel">
           <SteeringWheel value={steerUi} onChange={setSteer} size={Math.min(170, Math.round(dim.h * 0.46))} />
           <button className="mini" onClick={() => setSteer(0)}>직진</button>
