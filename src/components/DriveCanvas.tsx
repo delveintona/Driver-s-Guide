@@ -1,0 +1,986 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Vehicle } from '../data/vehicles'
+import { vehicleGeometry } from '../data/vehicles'
+import {
+  boxDepth, drawBox, drawPolyline3, fillPolygon3, project, projectD,
+  type Box, type Camera, type Pt3,
+} from '../lib/render3d'
+import {
+  START, bodyCorners, buildScene, groundLines, predictPaths, stepCar,
+  type CarState, type CornerKey,
+} from '../lib/sim'
+import {
+  COURSE_LABEL, DEFAULT_DIMS, DIM_FIELDS, getCourse, pointInPolygon, to3,
+  type Course, type CourseDims, type CourseId, type V2,
+} from '../lib/courses'
+import SteeringWheel, { WHEEL_LOCK_DEG } from './SteeringWheel'
+
+export type DriveMode = 'cab' | 'chase' | 'top'
+type Geo = ReturnType<typeof vehicleGeometry>
+type Gear = 'R' | 'N' | 'D'
+
+interface Props {
+  vehicle: Vehicle
+  mode: DriveMode
+  /** 가로 화면 레이아웃(타보기) */
+  landscape?: boolean
+  headerSlot?: React.ReactNode
+  /** 세로 화면을 90° 돌려 쓰는 중이면 터치 좌표도 돌려서 해석 */
+  rotated?: boolean
+}
+
+const SKY: Record<DriveMode, string> = { cab: '#2a3a4a', chase: '#2a3a4a', top: '#1d2a1c' }
+const GROUND = '#2b3326'
+const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', rl: '#4dd0e1', rr: '#69db7c' }
+const WHEEL_LEN = 1.0
+const WHEEL_WID = 0.3
+const COURSE_VEHICLE = 'k511' // T·굴절·S 시험 코스는 두돈반만
+const DIMS_KEY = 'drivers-guide.courseDims.v1'
+
+interface Judge {
+  contacts: number
+  bodyWarn: number
+  mirrorWarn: number
+  started: number | null
+  elapsed: number
+  done: boolean
+  touched: boolean
+  marks: V2[]
+}
+const newJudge = (): Judge => ({ contacts: 0, bodyWarn: 0, mirrorWarn: 0, started: null, elapsed: 0, done: false, touched: false, marks: [] })
+
+function loadDims(): CourseDims {
+  try {
+    const raw = localStorage.getItem(DIMS_KEY)
+    if (raw) {
+      const p = JSON.parse(raw)
+      return {
+        gul: { ...DEFAULT_DIMS.gul, ...p.gul },
+        s: { ...DEFAULT_DIMS.s, ...p.s },
+        turn: { ...DEFAULT_DIMS.turn, ...p.turn },
+      }
+    }
+  } catch { /* noop */ }
+  return structuredClone(DEFAULT_DIMS)
+}
+
+function startState(g: Geo, course: Course | null): CarState {
+  if (!course) return { ...START }
+  const dir = { x: Math.cos(course.start.yaw), y: Math.sin(course.start.yaw) }
+  return {
+    x: course.start.x + dir.x * g.rearOverhang,
+    y: course.start.y + dir.y * g.rearOverhang,
+    yaw: course.start.yaw,
+    steer: 0,
+    v: 0,
+  }
+}
+
+const toWorld = (s: { x: number; y: number; yaw: number }, l: number, side: number): V2 => ({
+  x: s.x + Math.cos(s.yaw) * l - Math.sin(s.yaw) * side,
+  y: s.y + Math.sin(s.yaw) * l + Math.cos(s.yaw) * side,
+})
+
+function wheelPoints(s: CarState, g: Geo): V2[][] {
+  const res: V2[][] = []
+  for (const a of [0, g.wheelbase]) {
+    for (const side of [g.W / 2 - 0.15, -(g.W / 2 - 0.15)]) {
+      const steer = a === g.wheelbase ? s.steer : 0
+      const c = toWorld(s, a, side)
+      const yaw = s.yaw + steer
+      const pts: V2[] = []
+      for (const [dl, dw] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+        pts.push({
+          x: c.x + Math.cos(yaw) * (dl * WHEEL_LEN / 2) - Math.sin(yaw) * (dw * WHEEL_WID / 2),
+          y: c.y + Math.sin(yaw) * (dl * WHEEL_LEN / 2) + Math.cos(yaw) * (dw * WHEEL_WID / 2),
+        })
+      }
+      res.push(pts)
+    }
+  }
+  return res
+}
+
+const mirrorFwd = (g: Geo) => g.wheelbase + g.frontOverhang - 0.2
+const eyeOf = (s: CarState, g: Geo) => toWorld(s, g.wheelbase + g.frontOverhang - 1.3, 0.55)
+const mirrorTips = (s: CarState, g: Geo) => {
+  const side = g.W / 2 + g.mirrorOut
+  return [toWorld(s, mirrorFwd(g), side), toWorld(s, mirrorFwd(g), -side)]
+}
+const bodyPoints = (s: CarState, g: Geo): V2[] => {
+  const f = g.wheelbase + g.frontOverhang
+  const r = -g.rearOverhang
+  const h = g.W / 2
+  return [toWorld(s, f, h), toWorld(s, f, -h), toWorld(s, r, h), toWorld(s, r, -h)]
+}
+const gearSign = (g: Gear) => (g === 'D' ? 1 : g === 'R' ? -1 : 0)
+
+/** 타보기 화면 핸들 위치(캔버스 px) */
+const wheelLayout = (w: number, h: number) => {
+  const r = Math.min(h * 0.3, w * 0.14)
+  return { cx: w * 0.47, cy: h * 0.9, r, ry: r * 0.42 }
+}
+
+export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rotated }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const geo = vehicleGeometry(vehicle)
+  const geoRef = useRef(geo)
+  geoRef.current = geo
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const landRef = useRef(!!landscape)
+  landRef.current = !!landscape
+  const hoodRef = useRef(geo.hood)
+  hoodRef.current = geo.hood
+
+  const courseOk = vehicle.id === COURSE_VEHICLE
+  const [courseId, setCourseId] = useState<CourseId>('free')
+  const [dims, setDims] = useState<CourseDims>(loadDims)
+  const course = useMemo(
+    () => (courseOk && courseId !== 'free' ? getCourse(courseId, dims) : null),
+    [courseOk, courseId, dims],
+  )
+  const courseRef = useRef<Course | null>(null)
+  courseRef.current = course
+
+  const car = useRef<CarState>({ ...START })
+  const input = useRef({ gas: 0, key: 0, brake: false })
+  const gearRef = useRef<Gear>('N')
+  const leverUntil = useRef(0)
+  const steerRef = useRef(0)
+  const look = useRef({ yaw: 0, pitch: 0 }) // yaw +: 왼쪽, pitch +: 위
+  const lookDrag = useRef<{ x: number; y: number } | null>(null)
+  const trail = useRef<Record<CornerKey, Pt3[]>>({ fl: [], fr: [], rl: [], rr: [] })
+  const camYaw = useRef(START.yaw)
+  const judge = useRef<Judge>(newJudge())
+  const wasOut = useRef({ wheel: false, body: false, mirror: false })
+  const toastRef = useRef<{ text: string; until: number } | null>(null)
+
+  const [steerUi, setSteerUi] = useState(0)
+  const [gearUi, setGearUi] = useState<Gear>('N')
+  const [showTrail, setShowTrail] = useState(true)
+  const [showPredict, setShowPredict] = useState(true)
+  const [showGuide, setShowGuide] = useState(true)
+  const [showMap, setShowMap] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const flags = useRef({ showTrail, showPredict, showGuide, showMap, zoom })
+  flags.current = { showTrail, showPredict, showGuide, showMap, zoom }
+  const [hud, setHud] = useState({ speed: 0, dir: 'N' as 'D' | 'R' | 'N' })
+  const [jui, setJui] = useState<Judge>(newJudge())
+  const [showSpec, setShowSpec] = useState(false)
+  const [dim, setDim] = useState({ w: 800, h: 360 })
+  const scene = useRef(buildScene())
+
+  const setGear = (g: Gear) => {
+    gearRef.current = g
+    setGearUi(g)
+    leverUntil.current = performance.now() + 1500
+    if (g === 'N') input.current.gas = 0
+  }
+
+  const reset = () => {
+    car.current = startState(geoRef.current, courseRef.current)
+    trail.current = { fl: [], fr: [], rl: [], rr: [] }
+    camYaw.current = car.current.yaw
+    steerRef.current = 0
+    look.current = { yaw: 0, pitch: 0 }
+    input.current = { gas: 0, key: 0, brake: false }
+    gearRef.current = 'N'
+    setGearUi('N')
+    judge.current = newJudge()
+    wasOut.current = { wheel: false, body: false, mirror: false }
+    setSteerUi(0)
+    setJui(newJudge())
+  }
+
+  useEffect(() => {
+    reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicle.id, course])
+
+  useEffect(() => {
+    if (!courseOk && courseId !== 'free') setCourseId('free')
+  }, [courseOk, courseId])
+
+  const updateDims = (id: Exclude<CourseId, 'free'>, key: string, value: number | boolean) => {
+    setDims((d) => {
+      const next = { ...d, [id]: { ...d[id], [key]: value } } as CourseDims
+      try { localStorage.setItem(DIMS_KEY, JSON.stringify(next)) } catch { /* noop */ }
+      return next
+    })
+  }
+  const resetDims = (id: Exclude<CourseId, 'free'>) => {
+    setDims((d) => {
+      const next = { ...d, [id]: structuredClone(DEFAULT_DIMS[id]) } as CourseDims
+      try { localStorage.setItem(DIMS_KEY, JSON.stringify(next)) } catch { /* noop */ }
+      return next
+    })
+  }
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' || e.key === 'w') input.current.gas = 1
+      if (e.key === 'ArrowDown' || e.key === 's') input.current.gas = -1
+      if (e.key === 'ArrowLeft' || e.key === 'a') input.current.key = -1
+      if (e.key === 'ArrowRight' || e.key === 'd') input.current.key = 1
+      if (e.key === ' ') input.current.brake = true
+    }
+    const up = (e: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'w', 's'].includes(e.key)) input.current.gas = 0
+      if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(e.key)) input.current.key = 0
+      if (e.key === ' ') input.current.brake = false
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current!
+    const wrap = wrapRef.current!
+    const ctx = canvas.getContext('2d')!
+    let raf = 0
+    let last = performance.now()
+    let hudAcc = 0
+    let size = { w: 300, h: 300 }
+
+    const resize = () => {
+      const w = wrap.clientWidth
+      const h = wrap.clientHeight
+      const dpr = window.devicePixelRatio || 1
+      size = { w, h }
+      setDim({ w, h })
+      canvas.width = Math.max(1, Math.round(w * dpr))
+      canvas.height = Math.max(1, Math.round(h * dpr))
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+    resize()
+    const ro = new ResizeObserver(resize)
+    ro.observe(wrap)
+
+    const evaluate = (now: number) => {
+      const course = courseRef.current
+      const j = judge.current
+      if (!course) return
+      const s = car.current
+      const g = geoRef.current
+      if (j.started == null && Math.abs(s.v) > 0.05) j.started = now
+      if (j.started != null && !j.done) j.elapsed = (now - j.started) / 1000
+      if (j.done) return
+
+      const wheelOut = wheelPoints(s, g).flat().find((p) => !pointInPolygon(p, course.polygon))
+      if (wheelOut && !wasOut.current.wheel) {
+        j.contacts++
+        j.marks.push(wheelOut)
+        toastRef.current = { text: '검지선 접촉 (바퀴)', until: now + 1400 }
+      }
+      wasOut.current.wheel = !!wheelOut
+
+      const bodyOut = bodyPoints(s, g).find((p) => !pointInPolygon(p, course.polygon))
+      if (bodyOut && !wasOut.current.body) j.bodyWarn++
+      wasOut.current.body = !!bodyOut
+
+      const mirrorOut = mirrorTips(s, g).find((p) => !pointInPolygon(p, course.polygon))
+      if (mirrorOut && !wasOut.current.mirror) {
+        j.mirrorWarn++
+        toastRef.current = { text: '후사경이 코스 밖으로 나감', until: now + 1400 }
+      }
+      wasOut.current.mirror = !!mirrorOut
+
+      if (course.finish) {
+        const f = course.finish
+        const allPast = bodyPoints(s, g).every((p) => (p.x - f.point.x) * f.dir.x + (p.y - f.point.y) * f.dir.y > 0)
+        if (allPast && !wheelOut) j.done = true
+      } else if (course.garage) {
+        const gr = course.garage
+        const rearWheels = wheelPoints(s, g).slice(0, 2).flat()
+        if (!j.touched && rearWheels.some((p) => (p.y - gr.touchY) * gr.touchDir >= 0 && p.x > gr.x0 && p.x < gr.x1)) {
+          j.touched = true
+          toastRef.current = { text: '뒷바퀴가 확인선에 닿음 → 전진으로 나오세요', until: now + 2200 }
+        }
+        if (j.touched && (s.y - gr.returnY) * gr.touchDir < 0) j.done = true
+      }
+    }
+
+    const frame = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000)
+      last = now
+      const g = geoRef.current
+      const s = car.current
+
+      if (input.current.key !== 0) {
+        steerRef.current = Math.max(-1, Math.min(1, steerRef.current + input.current.key * dt * 0.9))
+      }
+      const maxV = input.current.gas >= 0 ? 3 : 1.6
+      let targetV = input.current.gas * maxV
+      let acc = input.current.gas === 0 ? 4 : 1.6
+      if (input.current.brake) { targetV = 0; acc = 8 }
+      s.v += Math.sign(targetV - s.v) * Math.min(Math.abs(targetV - s.v), acc * dt)
+      const maxSteer = (g.maxSteerDeg * Math.PI) / 180
+      const targetSteer = -steerRef.current * maxSteer // 핸들 오른쪽(+) = 우회전
+      const rate = 0.7 * dt
+      s.steer += Math.sign(targetSteer - s.steer) * Math.min(Math.abs(targetSteer - s.steer), rate)
+      car.current = stepCar(s, g, dt)
+
+      if (Math.abs(car.current.v) > 0.05) {
+        const c = bodyCorners(car.current, g)
+        for (const k of ['fl', 'fr', 'rl', 'rr'] as CornerKey[]) {
+          const arr = trail.current[k]
+          const lastPt = arr[arr.length - 1]
+          if (!lastPt || Math.hypot(lastPt.x - c[k].x, lastPt.y - c[k].y) > 0.2) {
+            arr.push(c[k])
+            if (arr.length > 500) arr.shift()
+          }
+        }
+      }
+      evaluate(now)
+
+      hudAcc += dt
+      if (hudAcc > 0.12) {
+        hudAcc = 0
+        const v = car.current.v
+        setHud({ speed: Math.abs(v) * 3.6, dir: Math.abs(v) < 0.05 ? 'N' : v > 0 ? 'D' : 'R' })
+        if (input.current.key !== 0) setSteerUi(steerRef.current)
+        if (courseRef.current) setJui({ ...judge.current })
+      }
+
+      draw(now)
+      raf = requestAnimationFrame(frame)
+    }
+
+    /** 코스 전체가 들어오는 고정 탑뷰(코스 없으면 차량 따라가기) */
+    const topCam = (w: number, h: number): Camera => {
+      const g = geoRef.current
+      const s = car.current
+      const fl = flags.current
+      const mn = Math.min(w, h)
+      const c = courseRef.current
+      let height = (g.L * 2.2 + 8) / fl.zoom
+      let ox = s.x + Math.cos(s.yaw) * (g.wheelbase / 2)
+      let oy = s.y + Math.sin(s.yaw) * (g.wheelbase / 2) + 0.01
+      if (c) {
+        const xs = c.polygon.map((p) => p.x)
+        const ys = c.polygon.map((p) => p.y)
+        const bw = Math.max(...xs) - Math.min(...xs)
+        const bh = Math.max(...ys) - Math.min(...ys)
+        ox = (Math.max(...xs) + Math.min(...xs)) / 2
+        oy = (Math.max(...ys) + Math.min(...ys)) / 2
+        height = Math.max(bw / (0.78 * 1.24 * (w / mn)), bh / (0.78 * 1.24 * (h / mn)))
+        if (modeRef.current === 'top') height /= fl.zoom
+      }
+      return { x: ox, y: oy, z: height, yaw: Math.PI / 2, pitch: Math.PI / 2 - 0.0001, f: mn / 2 / 0.62, w, h }
+    }
+
+    const makeCam = (m: DriveMode): Camera => {
+      const g = geoRef.current
+      const s = car.current
+      const fl = flags.current
+      const { w, h } = size
+      if (m === 'top') return topCam(w, h)
+      const cx = s.x + Math.cos(s.yaw) * (g.wheelbase / 2)
+      const cy = s.y + Math.sin(s.yaw) * (g.wheelbase / 2)
+      const cam: Camera = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, f: 0, w, h }
+      if (m === 'chase') {
+        let d = s.yaw - camYaw.current
+        d = Math.atan2(Math.sin(d), Math.cos(d))
+        camYaw.current += d * 0.08
+        const back = (g.L * 1.1 + 5) / fl.zoom
+        Object.assign(cam, {
+          x: cx - Math.cos(camYaw.current) * back,
+          y: cy - Math.sin(camYaw.current) * back,
+          z: (g.H * 0.9 + 3) / Math.sqrt(fl.zoom),
+          yaw: camYaw.current, pitch: 0.38, f: Math.min(w, h * 0.95) * 0.95,
+        })
+      } else {
+        const p = eyeOf(s, g)
+        Object.assign(cam, {
+          x: p.x, y: p.y, z: Math.min(g.H - 0.25, g.H * 0.78 + 0.15),
+          yaw: s.yaw + look.current.yaw, pitch: 0.04 - look.current.pitch, f: w * 0.5,
+        })
+      }
+      return cam
+    }
+
+    const drawWorld = (ctx: CanvasRenderingContext2D, cam: Camera, m: DriveMode, opts: { labels: boolean }) => {
+      const g = geoRef.current
+      const s = car.current
+      const fl = flags.current
+      const course = courseRef.current
+      const { w, h } = cam
+      ctx.fillStyle = SKY[m]
+      ctx.fillRect(0, 0, w, h)
+
+      ctx.fillStyle = GROUND
+      if (m !== 'top') {
+        const hz = project(cam, { x: cam.x + Math.cos(cam.yaw) * 400, y: cam.y + Math.sin(cam.yaw) * 400, z: 0 })
+        const hy = hz ? hz[1] : h / 2
+        ctx.fillRect(0, Math.max(0, hy), w, h - Math.max(0, hy))
+      } else ctx.fillRect(0, 0, w, h)
+
+      const gridR = m === 'top' ? Math.ceil(cam.z * 0.9) : 40
+      const gx0 = Math.floor(cam.x - gridR)
+      const gy0 = Math.floor(cam.y - gridR)
+      for (let i = 0; i <= gridR * 2; i++) {
+        const gxx = gx0 + i
+        const gyy = gy0 + i
+        const major = (n: number) => Math.round(n) % 5 === 0
+        drawPolyline3(ctx, cam, [{ x: gxx, y: gy0, z: 0 }, { x: gxx, y: gy0 + gridR * 2, z: 0 }], { stroke: major(gxx) ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.045)' })
+        drawPolyline3(ctx, cam, [{ x: gx0, y: gyy, z: 0 }, { x: gx0 + gridR * 2, y: gyy, z: 0 }], { stroke: major(gyy) ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.045)' })
+      }
+
+      if (course) {
+        fillPolygon3(ctx, cam, to3(course.polygon, 0.01), 'rgba(78,84,70,0.95)')
+        for (const ln of course.lines) drawPolyline3(ctx, cam, to3(ln), { stroke: '#ffd23f', width: 2.5 })
+        for (const mk of course.marks) drawPolyline3(ctx, cam, to3(mk.pts, 0.03), { stroke: mk.color, width: 2.5 })
+        for (const p of judge.current.marks) {
+          drawPolyline3(ctx, cam, to3([{ x: p.x - 0.25, y: p.y }, { x: p.x + 0.25, y: p.y }], 0.05), { stroke: '#ff3b3b', width: 4 })
+          drawPolyline3(ctx, cam, to3([{ x: p.x, y: p.y - 0.25 }, { x: p.x, y: p.y + 0.25 }], 0.05), { stroke: '#ff3b3b', width: 4 })
+        }
+      } else {
+        for (const ln of groundLines()) drawPolyline3(ctx, cam, ln.pts, { stroke: ln.color, width: ln.width, dash: ln.dash })
+      }
+
+      if (fl.showTrail) {
+        for (const k of ['fl', 'fr', 'rl', 'rr'] as CornerKey[]) drawPolyline3(ctx, cam, trail.current[k], { stroke: CORNER_COLOR[k], width: 1.5 })
+      }
+      if (fl.showPredict) {
+        const dir: 1 | -1 = s.v < -0.05 ? -1 : gearRef.current === 'R' || input.current.gas < 0 ? -1 : 1
+        const paths = predictPaths(s, g, 12, dir)
+        for (const k of ['fl', 'fr', 'rl', 'rr'] as CornerKey[]) drawPolyline3(ctx, cam, paths[k], { stroke: CORNER_COLOR[k], width: 1.5, dash: [4, 5] })
+      }
+      if (fl.showGuide && m !== 'cab') {
+        const hw = g.W / 2
+        const front = g.wheelbase + g.frontOverhang
+        const rear = -g.rearOverhang
+        const seg = (side: number, a: number, b: number): Pt3[] => [
+          { ...toWorld(s, a, side), z: 0.03 },
+          { ...toWorld(s, b, side), z: 0.03 },
+        ]
+        for (const side of [hw, -hw]) {
+          drawPolyline3(ctx, cam, seg(side, front, front + 14), { stroke: 'rgba(255,235,59,0.75)', width: 1.5 })
+          drawPolyline3(ctx, cam, seg(side, rear, rear - 10), { stroke: 'rgba(255,235,59,0.45)', width: 1.5, dash: [3, 4] })
+        }
+        const mw = hw + g.mirrorOut
+        for (const side of [mw, -mw]) {
+          drawPolyline3(ctx, cam, seg(side, mirrorFwd(g), mirrorFwd(g) + 14), { stroke: 'rgba(255,140,0,0.8)', width: 1.5, dash: [5, 4] })
+        }
+      }
+
+      const boxes: Box[] = []
+      if (!course) {
+        for (const r of scene.current.refs) boxes.push(...r.boxes)
+        boxes.push(...scene.current.cones)
+      }
+      boxes.push(...vehicleBoxes(s, g, vehicle.color, m === 'cab'))
+      boxes.sort((a, b) => boxDepth(cam, b) - boxDepth(cam, a))
+      for (const b of boxes) drawBox(ctx, cam, b)
+
+      if (opts.labels) {
+        ctx.font = '600 11px system-ui, sans-serif'
+        ctx.textAlign = 'center'
+        const items: { label: string; at: Pt3; color: string }[] = []
+        if (!course) for (const r of scene.current.refs) items.push({ label: r.label, at: r.at, color: '#ffe9a8' })
+        else for (const mk of course.marks) {
+          if (mk.label) items.push({ label: mk.label, at: { x: (mk.pts[0].x + mk.pts[1].x) / 2, y: (mk.pts[0].y + mk.pts[1].y) / 2, z: 0.3 }, color: mk.color })
+        }
+        for (const r of items) {
+          const p = project(cam, r.at)
+          if (!p) continue
+          if (m !== 'top' && Math.hypot(r.at.x - cam.x, r.at.y - cam.y) > 24) continue
+          const tw = ctx.measureText(r.label).width + 10
+          ctx.fillStyle = 'rgba(0,0,0,0.6)'
+          ctx.fillRect(p[0] - tw / 2, p[1] - 12, tw, 16)
+          ctx.fillStyle = r.color
+          ctx.fillText(r.label, p[0], p[1])
+        }
+      }
+    }
+
+    const mirrorCam = (side: 1 | -1, w: number, h: number): Camera => {
+      const g = geoRef.current
+      const s = car.current
+      const p = toWorld(s, mirrorFwd(g), side * (g.W / 2 + g.mirrorOut))
+      return {
+        x: p.x, y: p.y, z: g.H * 0.62 + 0.15,
+        yaw: s.yaw + Math.PI - side * 0.14,
+        pitch: 0.06, f: w * 1.35, w, h,
+      }
+    }
+
+    const draw = (now: number) => {
+      const m = modeRef.current
+      const { w, h } = size
+      ctx.clearRect(0, 0, w, h)
+      const cam0 = makeCam(m)
+      drawWorld(ctx, cam0, m, { labels: true })
+
+      if (m === 'cab') {
+        const g = geoRef.current
+        const s = car.current
+        const f = cam0.f
+        const lk = look.current
+        const dx = f * Math.tan(Math.max(-1.2, Math.min(1.2, lk.yaw)))
+        const dy = f * Math.tan(lk.pitch)
+        drawCabInterior(ctx, w, h, {
+          steer: steerRef.current, gear: gearRef.current, hood: hoodRef.current,
+          speed: Math.abs(s.v) * 3.6, color: vehicle.color, lever: leverUntil.current > now, now, dx, dy,
+        })
+        // 후사경: 실제 거울 위치에 붙어 있어서, 고개를 돌려야 보인다
+        for (const side of [1, -1] as const) {
+          const mp = toWorld(s, mirrorFwd(g), side * (g.W / 2 + g.mirrorOut * 0.5))
+          const pr = projectD(cam0, { x: mp.x, y: mp.y, z: g.H * 0.62 + 0.1 })
+          if (!pr) continue
+          const [px, py, d] = pr
+          const mw = Math.round(Math.min(w * 0.45, (f * 0.375) / Math.max(d, 0.5)))
+          const mh = Math.round(mw * 1.5)
+          const x0 = Math.round(px - mw / 2)
+          const y0 = Math.round(py - mh / 2)
+          if (x0 > w || x0 + mw < 0 || y0 > h || y0 + mh < 0 || mw < 12) continue
+          ctx.save()
+          ctx.beginPath()
+          ctx.roundRect(x0, y0, mw, mh, 6)
+          ctx.clip()
+          ctx.translate(x0 + mw, y0)
+          ctx.scale(-1, 1)
+          drawWorld(ctx, mirrorCam(side, mw, mh), 'cab', { labels: false })
+          ctx.restore()
+          ctx.strokeStyle = '#0d0d0d'
+          ctx.lineWidth = 5
+          ctx.beginPath()
+          ctx.roundRect(x0, y0, mw, mh, 6)
+          ctx.stroke()
+          ctx.strokeStyle = '#777'
+          ctx.lineWidth = 1.2
+          ctx.stroke()
+          ctx.font = '10px system-ui, sans-serif'
+          ctx.fillStyle = 'rgba(255,255,255,.8)'
+          ctx.textAlign = 'center'
+          ctx.fillText(side === 1 ? '좌 후사경' : '우 후사경', x0 + mw / 2, y0 + mh + 12)
+        }
+      }
+
+      // 시험 모드: 위에서 본 내 위치 (북쪽이 위)
+      if (courseRef.current && flags.current.showMap && m !== 'top') {
+        const land = landRef.current
+        const mw = Math.round(Math.min(w * 0.62, h * (land ? 1.3 : 1.2)))
+        const mh = Math.round(Math.min(h * (land ? 0.6 : 0.74), mw * 0.8))
+        const mx = Math.round((w - mw) / 2)
+        const my = land ? 108 : 8
+        const cam = topCam(mw, mh)
+        ctx.save()
+        ctx.beginPath()
+        ctx.roundRect(mx, my, mw, mh, 10)
+        ctx.clip()
+        ctx.translate(mx, my)
+        drawWorld(ctx, cam, 'top', { labels: false })
+        const g = geoRef.current
+        const s = car.current
+        const c0 = project(cam, { x: s.x + Math.cos(s.yaw) * (g.wheelbase / 2), y: s.y + Math.sin(s.yaw) * (g.wheelbase / 2), z: 0 })
+        if (c0) {
+          const pulse = 12 + 4 * Math.sin(now / 180)
+          ctx.strokeStyle = '#ff8c00'
+          ctx.lineWidth = 3
+          ctx.beginPath()
+          ctx.arc(c0[0], c0[1], pulse, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.fillStyle = '#ff8c00'
+          ctx.font = '700 12px system-ui, sans-serif'
+          ctx.textAlign = 'center'
+          ctx.fillText('내 위치', c0[0], c0[1] - pulse - 5)
+        }
+        ctx.restore()
+        ctx.strokeStyle = 'rgba(255,255,255,.7)'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.roundRect(mx, my, mw, mh, 10)
+        ctx.stroke()
+        ctx.font = '11px system-ui, sans-serif'
+        ctx.fillStyle = '#fff'
+        ctx.textAlign = 'left'
+        ctx.fillText('위에서 본 화면 (위쪽 = 북쪽)', mx + 8, my + mh - 8)
+      }
+
+      const t = toastRef.current
+      if (t && t.until > now) {
+        ctx.font = '700 15px system-ui, sans-serif'
+        ctx.textAlign = 'center'
+        const tw = ctx.measureText(t.text).width + 24
+        ctx.fillStyle = 'rgba(200,40,40,.92)'
+        ctx.beginPath()
+        ctx.roundRect(w / 2 - tw / 2, h * 0.5 - 18, tw, 34, 10)
+        ctx.fill()
+        ctx.fillStyle = '#fff'
+        ctx.fillText(t.text, w / 2, h * 0.5 + 5)
+      }
+    }
+
+    raf = requestAnimationFrame(frame)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [vehicle.color, vehicle.id, vehicle])
+
+  const hold = (gas: 1 | -1) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      input.current.gas = gas
+    },
+    onPointerUp: () => { input.current.gas = 0 },
+    onPointerCancel: () => { input.current.gas = 0 },
+  })
+  const accel = {
+    onPointerDown: (e: React.PointerEvent) => {
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      input.current.gas = gearSign(gearRef.current)
+    },
+    onPointerUp: () => { input.current.gas = 0 },
+    onPointerCancel: () => { input.current.gas = 0 },
+  }
+  const brake = {
+    onPointerDown: (e: React.PointerEvent) => {
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+      input.current.brake = true
+    },
+    onPointerUp: () => { input.current.brake = false },
+    onPointerCancel: () => { input.current.brake = false },
+  }
+
+  const setSteer = (v: number) => { steerRef.current = v; setSteerUi(v) }
+  const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`
+  const courseIds: CourseId[] = courseOk ? ['free', 'gul', 's', 'turn'] : ['free']
+
+  const courseChips = (
+    <div className="chips course-chips">
+      {courseIds.map((c) => (
+        <button key={c} className={courseId === c ? 'on' : ''} onClick={() => setCourseId(c)}>{COURSE_LABEL[c]}</button>
+      ))}
+      {course && (
+        <button className={showMap ? 'on map' : 'map'} onClick={() => setShowMap((v) => !v)}>위에서 보기</button>
+      )}
+    </div>
+  )
+
+  const dimEditor = course && (
+    <div className="spec-pop">
+      <p><b>코스 치수 입력</b> — 군 코스 치수는 공개 자료를 못 찾았습니다. 아래 값은 임시값이니 부대 코스에 맞게 고쳐 쓰세요.</p>
+      <div className="dim-grid">
+        {DIM_FIELDS[course.id].map((f) => {
+          const cur = (dims[course.id] as unknown as Record<string, number | boolean>)[f.key]
+          return (
+            <label key={f.key}>
+              <span>{f.label}</span>
+              {f.bool ? (
+                <select value={cur ? '1' : '0'} onChange={(e) => updateDims(course.id, f.key, e.target.value === '1')}>
+                  <option value="1">{f.bool[0]}</option>
+                  <option value="0">{f.bool[1]}</option>
+                </select>
+              ) : (
+                <span className="num">
+                  <input
+                    type="number" step="0.1" min="0.1" value={cur as number}
+                    onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v > 0) updateDims(course.id, f.key, v) }}
+                  />
+                  {f.unit}
+                </span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      <button className="mini" onClick={() => resetDims(course.id)}>임시 기본값으로</button>
+      <p className="fineprint">기본값: 굴절 폭 4.7·모퉁이 사이 15·직선 6, T자 폭 5.2·차고 8 은 민간 별표 23(1종 대형) 일부이고, S자 반경·각도는 근거 없는 임시값입니다.</p>
+    </div>
+  )
+
+  const statusPanel = course && (
+    <div className={`status ${jui.done ? 'done' : ''}`}>
+      <div className="row">
+        <b>{course.name}</b>
+        <span className={jui.elapsed > 120 ? 'late' : ''}>{fmt(jui.elapsed)} / 2:00</span>
+      </div>
+      <div className="small desc">{course.description}</div>
+      <div className="row small">
+        <span>검지선 접촉(바퀴) <b className={jui.contacts ? 'bad' : ''}>{jui.contacts}</b></span>
+        <span>후사경 이탈 <b className={jui.mirrorWarn ? 'warn' : ''}>{jui.mirrorWarn}</b></span>
+        <span>차체 이탈 <b className={jui.bodyWarn ? 'warn' : ''}>{jui.bodyWarn}</b></span>
+      </div>
+      {course.garage && <div className="small">확인선 {jui.touched ? '✔ 닿음 → 전진으로 나오세요' : '아직'}</div>}
+      <div className="small goal">{jui.done ? '✔ 연습 완료 (공식 판정 아님)' : course.goal}</div>
+      <button className="mini" onClick={() => setShowSpec((v) => !v)}>{showSpec ? '닫기' : '코스 치수 입력/수정'}</button>
+      {showSpec && dimEditor}
+    </div>
+  )
+
+  const hudEl = (
+    <div className="hud">
+      <span className="gear">{hud.dir}</span>
+      <span>{hud.speed.toFixed(1)} km/h</span>
+    </div>
+  )
+
+  if (landscape) {
+    const lookHandlers = {
+      onPointerDown: (e: React.PointerEvent) => {
+        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        lookDrag.current = { x: e.clientX, y: e.clientY }
+      },
+      onPointerMove: (e: React.PointerEvent) => {
+        const ld = lookDrag.current
+        if (!ld) return
+        const sx = e.clientX - ld.x
+        const sy = e.clientY - ld.y
+        lookDrag.current = { x: e.clientX, y: e.clientY }
+        // 화면을 90° 돌려 쓰는 경우: 화면 좌표 → 레이아웃 좌표
+        const dx = rotated ? sy : sx
+        const dy = rotated ? -sx : sy
+        const f = Math.max(1, dim.w) * 0.5
+        look.current.yaw = Math.max(-1.9, Math.min(1.9, look.current.yaw + dx / f))
+        look.current.pitch = Math.max(-0.45, Math.min(0.6, look.current.pitch + dy / f))
+      },
+      onPointerUp: () => { lookDrag.current = null },
+      onPointerCancel: () => { lookDrag.current = null },
+    }
+    return (
+      <div className="cab">
+        <div className="canvas-wrap fill" ref={wrapRef} {...lookHandlers}>
+          <canvas ref={canvasRef} />
+        </div>
+        <div className="cab-top">
+          {headerSlot}
+          {courseChips}
+          <button className="mini" onClick={() => { look.current = { yaw: 0, pitch: 0 } }}>시선 정면</button>
+          <button className="mini" onClick={reset}>처음으로</button>
+          {hudEl}
+        </div>
+        {statusPanel && <div className="cab-status">{statusPanel}</div>}
+        <div className="cab-wheel">
+          <SteeringWheel value={steerUi} onChange={setSteer} size={Math.min(170, Math.round(dim.h * 0.46))} />
+          <button className="mini" onClick={() => setSteer(0)}>직진</button>
+        </div>
+        <div className="gear-btns right">
+          {(['D', 'N', 'R'] as Gear[]).map((g) => (
+            <button key={g} className={gearUi === g ? 'on' : ''} onClick={() => setGear(g)}>{g}</button>
+          ))}
+        </div>
+        <div className="cab-pedals two">
+          <button className="pedal brake" {...brake}>브레이크</button>
+          <button className="pedal fwd" {...accel}>가속 ({gearUi === 'D' ? '전진' : gearUi === 'R' ? '후진' : '중립'})</button>
+        </div>
+        <p className="cab-note">화면을 밀면 고개를 돌려 창·후사경을 볼 수 있어요 · 왼쪽 핸들, 오른쪽 기어·페달 · 거울·눈높이는 가정값</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="drive">
+      {courseChips}
+      {!courseOk && <p className="fineprint">T자·굴절·S자 시험 코스는 두돈반(K511)만 지원합니다.</p>}
+      <div className="canvas-wrap" ref={wrapRef}>
+        <canvas ref={canvasRef} />
+        {hudEl}
+        <div className="zoom">
+          <button onClick={() => setZoom((z) => Math.min(3, z * 1.25))} aria-label="확대">＋</button>
+          <button onClick={() => setZoom((z) => Math.max(0.5, z / 1.25))} aria-label="축소">－</button>
+        </div>
+      </div>
+      {statusPanel}
+      <div className="controls">
+        <div className="steer-row">
+          <SteeringWheel value={steerUi} onChange={setSteer} size={140} />
+          <div className="steer-side">
+            <small>앞바퀴 최대 {geo.maxSteerDeg.toFixed(0)}°{geo.steerAssumed ? ' (가정)' : ''}<br />핸들 회전은 ±{WHEEL_LOCK_DEG}° 도식(조향비 미확인)</small>
+            <button className="mini" onClick={() => setSteer(0)}>핸들 직진</button>
+          </div>
+        </div>
+        <div className="pedals">
+          <button className="pedal rev" {...hold(-1)}>후진 R</button>
+          <button className="pedal fwd" {...hold(1)}>전진 D</button>
+        </div>
+        <div className="toggles">
+          <label><input type="checkbox" checked={showGuide} onChange={(e) => setShowGuide(e.target.checked)} /> 차폭·후사경선</label>
+          <label><input type="checkbox" checked={showPredict} onChange={(e) => setShowPredict(e.target.checked)} /> 예상 궤적</label>
+          <label><input type="checkbox" checked={showTrail} onChange={(e) => setShowTrail(e.target.checked)} /> 지나간 궤적</label>
+          <button className="mini" onClick={reset}>처음으로</button>
+        </div>
+        <div className="legend-trail">
+          <i style={{ background: CORNER_COLOR.fl }} />앞-왼 <i style={{ background: CORNER_COLOR.fr }} />앞-오 <i style={{ background: CORNER_COLOR.rl }} />뒤-왼 <i style={{ background: CORNER_COLOR.rr }} />뒤-오
+          <i style={{ background: '#ff8c00' }} />후사경 끝
+        </div>
+        <p className="fineprint">
+          교육용 도식입니다. {geo.wheelbaseAssumed ? '축거는 도식용 가정값입니다. ' : ''}후사경 돌출({(geo.mirrorOut * 100).toFixed(0)} cm), 눈높이는 가정이며 실차와 다릅니다. 실제 운행 허가나 통과 가능 여부의 보증이 아닙니다.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+interface InteriorOpts { steer: number; gear: Gear; hood: boolean; speed: number; color: string; lever: boolean; now: number; dx: number; dy: number }
+
+/** 운전석 안쪽: 창틀·A필러·계기판·보닛·핸들·두 손·변속 레버 */
+function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o: InteriorOpts) {
+  ctx.save()
+  ctx.translate(o.dx, o.dy)
+  const dark = '#14160f'
+  const sleeve = '#4b5a2e'
+  const skin = '#d9a47a'
+  // 지붕 헤더 + 햇빛가리개 띠
+  ctx.fillStyle = dark
+  ctx.fillRect(-w * 3, 0, w * 7, h * 0.07)
+  ctx.fillStyle = 'rgba(20,40,60,.28)'
+  ctx.fillRect(w * 0.1, h * 0.07, w * 0.8, h * 0.06)
+  // A필러
+  ctx.fillStyle = dark
+  ctx.beginPath()
+  ctx.moveTo(w * 0.095, h * 0.07); ctx.lineTo(w * 0.135, h * 0.07); ctx.lineTo(w * 0.205, h * 0.7); ctx.lineTo(w * 0.165, h * 0.7)
+  ctx.closePath(); ctx.fill()
+  ctx.beginPath()
+  ctx.moveTo(w * 0.905, h * 0.07); ctx.lineTo(w * 0.865, h * 0.07); ctx.lineTo(w * 0.795, h * 0.7); ctx.lineTo(w * 0.835, h * 0.7)
+  ctx.closePath(); ctx.fill()
+  // 옆 창틀
+  ctx.fillRect(0, 0, w * 0.012, h)
+  ctx.fillRect(w * 0.988, 0, w * 0.012, h)
+  ctx.fillRect(-w * 3, h * 0.07, w * 3.1, h * 0.012)
+  ctx.fillRect(w * 0.9, h * 0.07, w * 3.1, h * 0.012)
+  // 도어 패널(창 아래)
+  ctx.fillStyle = '#1d2018'
+  ctx.beginPath(); ctx.moveTo(-w * 3, h * 0.64); ctx.lineTo(w * 0.17, h * 0.7); ctx.lineTo(w * 0.17, h * 2); ctx.lineTo(-w * 3, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(w * 4, h * 0.64); ctx.lineTo(w * 0.83, h * 0.7); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(w * 4, h * 2); ctx.closePath(); ctx.fill()
+  // 룸미러
+  ctx.fillStyle = '#0c0d0a'
+  ctx.beginPath(); ctx.roundRect(w * 0.46, h * 0.075, w * 0.08, h * 0.05, 4); ctx.fill()
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1; ctx.stroke()
+  // 보닛
+  if (o.hood) {
+    ctx.fillStyle = shade(o.color, -35)
+    ctx.beginPath(); ctx.moveTo(w * 0.3, h * 0.7); ctx.lineTo(w * 0.7, h * 0.7); ctx.lineTo(w * 0.6, h * 0.63); ctx.lineTo(w * 0.4, h * 0.63); ctx.closePath(); ctx.fill()
+    ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 1.5; ctx.stroke()
+  }
+  // 대시보드
+  const dg = ctx.createLinearGradient(0, h * 0.68, 0, h)
+  dg.addColorStop(0, '#2a2d24'); dg.addColorStop(1, '#101109')
+  ctx.fillStyle = dg
+  ctx.beginPath(); ctx.moveTo(w * 0.17, h * 0.7); ctx.quadraticCurveTo(w * 0.5, h * 0.66, w * 0.83, h * 0.7); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(w * 0.17, h * 2); ctx.closePath(); ctx.fill()
+  // 속도계
+  const gx = w * 0.3, gy = h * 0.84, gr = h * 0.085
+  ctx.fillStyle = '#0a0b08'; ctx.beginPath(); ctx.arc(gx, gy, gr, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = '#6f7a5c'; ctx.lineWidth = 2; ctx.stroke()
+  const frac = Math.min(1, o.speed / 20)
+  const ang = Math.PI * 0.75 + frac * Math.PI * 1.5
+  ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 2.5
+  ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(ang) * gr * 0.8, gy + Math.sin(ang) * gr * 0.8); ctx.stroke()
+  ctx.fillStyle = '#9aa98c'; ctx.font = `${Math.round(gr * 0.32)}px system-ui, sans-serif`; ctx.textAlign = 'center'
+  ctx.fillText('km/h', gx, gy + gr * 0.62)
+  ctx.fillText(o.speed.toFixed(0), gx, gy - gr * 0.2)
+
+  // 변속 레버 (오른쪽)
+  const bx = w * 0.62, by = h * 0.92
+  const Ls = h * 0.2
+  const tilt = o.gear === 'D' ? -0.35 : o.gear === 'R' ? 0.35 : 0
+  const kx = bx + Math.sin(tilt) * Ls
+  const ky = by - Math.cos(tilt) * Ls
+  ctx.fillStyle = '#0a0a0a'; ctx.beginPath(); ctx.ellipse(bx, by + 2, 20, 8, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = '#8b8f84'; ctx.lineWidth = 6; ctx.lineCap = 'round'
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(kx, ky); ctx.stroke()
+  ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.arc(kx, ky, 11, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5; ctx.stroke()
+  ctx.fillStyle = '#ffd23f'; ctx.font = '700 12px system-ui, sans-serif'; ctx.fillText(o.gear, kx, ky + 4)
+
+  // 핸들
+  const wl = wheelLayout(w, h)
+  const rot = o.steer * WHEEL_LOCK_DEG * Math.PI / 180
+  const hand = (ang: number, grip: boolean, side: 1 | -1) => {
+    const hx = wl.cx + wl.r * Math.cos(ang)
+    const hy = wl.cy + wl.ry * Math.sin(ang)
+    drawHand(ctx, hx, hy, wl.r * 0.13, side, grip, sleeve, skin, w, h)
+  }
+  ctx.save()
+  ctx.translate(wl.cx, wl.cy)
+  ctx.scale(1, 0.42)
+  ctx.rotate(rot)
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = '#0c0c0c'; ctx.lineWidth = wl.r * 0.16
+  ctx.beginPath(); ctx.arc(0, 0, wl.r, 0, Math.PI * 2); ctx.stroke()
+  ctx.strokeStyle = '#3a3e34'; ctx.lineWidth = wl.r * 0.1
+  ctx.beginPath(); ctx.arc(0, 0, wl.r, 0, Math.PI * 2); ctx.stroke()
+  ctx.strokeStyle = '#25281f'; ctx.lineWidth = wl.r * 0.12
+  ctx.beginPath(); ctx.moveTo(-wl.r, 0); ctx.lineTo(wl.r, 0); ctx.moveTo(0, 0); ctx.lineTo(0, wl.r); ctx.stroke()
+  ctx.fillStyle = '#25281f'; ctx.beginPath(); ctx.arc(0, 0, wl.r * 0.22, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = wl.r * 0.1
+  ctx.beginPath(); ctx.moveTo(-wl.r * 0.12, -wl.r); ctx.lineTo(wl.r * 0.12, -wl.r); ctx.stroke()
+  ctx.restore()
+  // 두 손: 왼손은 항상 핸들 9시, 오른손은 레버 조작 중이면 레버로
+  hand(Math.PI + rot, true, -1)
+  if (o.lever) drawHand(ctx, kx, ky, wl.r * 0.13, 1, true, sleeve, skin, w, h)
+  else hand(rot, true, 1)
+  ctx.restore()
+}
+
+function drawHand(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, side: 1 | -1, grip: boolean, sleeve: string, skin: string, w: number, h: number) {
+  // 소매(전투복)
+  ctx.strokeStyle = sleeve
+  ctx.lineWidth = r * 1.9
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(x, y)
+  ctx.quadraticCurveTo(x + side * (w * 0.08), y + (h - y) * 0.55, w * 0.5 + side * w * 0.3, h + 30)
+  ctx.stroke()
+  ctx.strokeStyle = 'rgba(0,0,0,.35)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+  // 손
+  ctx.fillStyle = skin
+  ctx.beginPath(); ctx.ellipse(x, y, r * 1.1, r * 0.85, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = 'rgba(80,40,20,.6)'; ctx.lineWidth = 1.2; ctx.stroke()
+  if (grip) {
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath(); ctx.moveTo(x - r * 0.6, y + i * r * 0.35); ctx.lineTo(x + r * 0.6, y + i * r * 0.35)
+      ctx.strokeStyle = 'rgba(80,40,20,.55)'; ctx.lineWidth = 1; ctx.stroke()
+    }
+  }
+  ctx.fillStyle = skin
+  ctx.beginPath(); ctx.ellipse(x - side * r * 0.5, y - r * 0.75, r * 0.38, r * 0.55, side * 0.5, 0, Math.PI * 2); ctx.fill()
+}
+
+function vehicleBoxes(s: CarState, g: Geo, color: string, hideCabTop = false): Box[] {
+  const cos = Math.cos(s.yaw)
+  const sin = Math.sin(s.yaw)
+  const at = (l: number) => ({ x: s.x + cos * l, y: s.y + sin * l })
+  const frontEnd = g.wheelbase + g.frontOverhang
+  const rearEnd = -g.rearOverhang
+  const cabLen = Math.min(g.cabLength, g.L * 0.45)
+  const cabC = at(frontEnd - cabLen / 2)
+  const cargoLen = g.L - cabLen
+  const cargoC = at(rearEnd + cargoLen / 2)
+  const stroke = '#101510'
+  const boxes: Box[] = []
+  const chassis = at((frontEnd + rearEnd) / 2)
+  boxes.push({ cx: chassis.x, cy: chassis.y, yaw: s.yaw, len: g.L, wid: g.W * 0.9, z0: 0.35, z1: 0.75, fill: '#222', stroke })
+  boxes.push({ cx: cargoC.x, cy: cargoC.y, yaw: s.yaw, len: cargoLen, wid: g.W, z0: 0.75, z1: Math.min(g.H, 0.75 + g.cargoHeight * 0.62), fill: shade(color, -10), stroke, alpha: 0.9 })
+  boxes.push({ cx: cabC.x, cy: cabC.y, yaw: s.yaw, len: cabLen, wid: g.W, z0: 0.6, z1: hideCabTop ? g.H * 0.55 : g.H, fill: color, stroke, alpha: 0.95 })
+  const mz0 = g.H * 0.5
+  const mz1 = Math.min(g.H - 0.1, g.H * 0.5 + 0.55)
+  for (const side of [1, -1]) {
+    const lat = side * (g.W / 2 + g.mirrorOut / 2)
+    const mp = at(mirrorFwd(g))
+    boxes.push({ cx: mp.x - sin * lat, cy: mp.y + cos * lat, yaw: s.yaw, len: 0.14, wid: g.mirrorOut, z0: mz0, z1: mz1, fill: '#e8e8e8', stroke: '#222', alpha: 1 })
+  }
+  for (const a of [0, g.wheelbase]) {
+    for (const side of [g.W / 2 - 0.15, -(g.W / 2 - 0.15)]) {
+      const p = at(a)
+      const steer = a === g.wheelbase ? s.steer : 0
+      boxes.push({ cx: p.x - sin * side, cy: p.y + cos * side, yaw: s.yaw + steer, len: WHEEL_LEN, wid: WHEEL_WID, z0: 0, z1: WHEEL_LEN, fill: '#0c0c0c', stroke: '#444', alpha: 1 })
+    }
+  }
+  return boxes
+}
+
+function shade(hex: string, amt: number) {
+  const n = parseInt(hex.slice(1), 16)
+  const c = (v: number) => Math.max(0, Math.min(255, v + amt))
+  return `rgb(${c(n >> 16)},${c((n >> 8) & 255)},${c(n & 255)})`
+}
