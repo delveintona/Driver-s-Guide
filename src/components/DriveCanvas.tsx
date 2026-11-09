@@ -36,6 +36,7 @@ const GROUND = '#2b3326'
 const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', rl: '#4dd0e1', rr: '#69db7c' }
 const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
+const MAP_PX_PER_M = 22 // 시험 모드 지도 축척: 어느 코스든 1 m가 이 픽셀 수
 const MAP_ZOOM = 4 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
 const TIME_LIMIT = 180 // 초 (3분 넘으면 실격)
 const SOFT_LIMIT = 120 // 2분 넘으면 감점 구간(감점 기준은 미확인)
@@ -376,8 +377,10 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         oy = (Math.max(...ys) + Math.min(...ys)) / 2
         height = Math.max(bw / (0.78 * 1.24 * (w / mn)), bh / (0.78 * 1.24 * (h / mn)))
         if (modeRef.current === 'top') height /= fl.zoom
-        height /= mz
+        if (mz <= 1.01) height /= mz
         if (mz > 1.01) {
+          // 코스 크기와 상관없이 항상 같은 축척(1 m = MAP_PX_PER_M px)으로 보여준다
+          height = mn / 2 / 0.62 / MAP_PX_PER_M
           // 확대하면 내 차를 따라가며 간격을 자세히 볼 수 있게 한다
           ox = s.x + Math.cos(s.yaw) * (g.wheelbase / 2)
           oy = s.y + Math.sin(s.yaw) * (g.wheelbase / 2)
@@ -805,9 +808,9 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     )
   }
 
+  // 3인칭·위에서 보기: 한 화면에 고정(스크롤 없음). 캔버스 + 핸들 + 전진/후진
   return (
-    <div className="drive">
-      {courseChips}
+    <div className="drive view">
       <div className="canvas-wrap" ref={wrapRef}>
         <canvas ref={canvasRef} />
         {hudEl}
@@ -815,33 +818,22 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           <button onClick={() => setZoom((z) => Math.min(6, z * 1.25))} aria-label="확대">＋</button>
           <button onClick={() => setZoom((z) => Math.max(0.5, z / 1.25))} aria-label="축소">－</button>
         </div>
-      </div>
-      {statusPanel}
-      <div className="controls">
-        <div className="steer-row">
-          <SteeringWheel value={steerUi} onChange={setSteer} size={140} />
-          <div className="steer-side">
-            <small>앞바퀴 최대 {geo.maxSteerDeg.toFixed(0)}°{geo.steerAssumed ? ' (가정)' : ''}<br />핸들 회전은 ±{WHEEL_LOCK_DEG}° 도식(조향비 미확인)</small>
-            <button className="mini" onClick={() => setSteer(0)}>핸들 직진</button>
-          </div>
+        <div className="view-toggles">
+          <button className={showGuide ? 'on' : ''} onClick={() => setShowGuide((v) => !v)}>차폭선</button>
+          <button className={showPredict ? 'on' : ''} onClick={() => setShowPredict((v) => !v)}>예상</button>
+          <button className={showTrail ? 'on' : ''} onClick={() => setShowTrail((v) => !v)}>궤적</button>
+          <button onClick={reset}>처음</button>
         </div>
-        <div className="pedals">
+      </div>
+      <div className="view-controls">
+        <div className="view-wheel">
+          <SteeringWheel value={steerUi} onChange={setSteer} size={118} />
+          <button className="mini" onClick={() => setSteer(0)}>직진</button>
+        </div>
+        <div className="view-pedals">
           <button className="pedal rev" {...hold(-1)}>후진 R</button>
           <button className="pedal fwd" {...hold(1)}>전진 D</button>
         </div>
-        <div className="toggles">
-          <label><input type="checkbox" checked={showGuide} onChange={(e) => setShowGuide(e.target.checked)} /> 차폭·후사경선</label>
-          <label><input type="checkbox" checked={showPredict} onChange={(e) => setShowPredict(e.target.checked)} /> 예상 궤적</label>
-          <label><input type="checkbox" checked={showTrail} onChange={(e) => setShowTrail(e.target.checked)} /> 지나간 궤적</label>
-          <button className="mini" onClick={reset}>처음으로</button>
-        </div>
-        <div className="legend-trail">
-          <i style={{ background: CORNER_COLOR.fl }} />앞-왼 <i style={{ background: CORNER_COLOR.fr }} />앞-오 <i style={{ background: CORNER_COLOR.rl }} />뒤-왼 <i style={{ background: CORNER_COLOR.rr }} />뒤-오
-          <i style={{ background: '#ff8c00' }} />후사경 끝
-        </div>
-        <p className="fineprint">
-          교육용 도식입니다. {geo.wheelbaseAssumed ? '축거는 도식용 가정값입니다. ' : ''}후사경 돌출({(geo.mirrorOut * 100).toFixed(0)} cm), 눈높이는 가정이며 실차와 다릅니다. 실제 운행 허가나 통과 가능 여부의 보증이 아닙니다.
-        </p>
       </div>
     </div>
   )

@@ -1,5 +1,4 @@
-import { Link, useParams } from 'react-router-dom'
-import Page from '../components/Page'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import DriveCanvas, { type DriveMode } from '../components/DriveCanvas'
 import { getVehicle } from '../data/vehicles'
 
@@ -8,20 +7,26 @@ const MODES: { k: Exclude<DriveMode, 'cab'>; l: string }[] = [
   { k: 'top', l: '위에서' },
 ]
 
-/** 3인칭·위에서 보기. 타보기(운전석)와는 따로 있는 화면 */
+/** 3인칭·위에서 보기. 스크롤 없이 한 화면에 고정 */
 export default function View() {
   const { id, mode } = useParams()
+  const nav = useNavigate()
   const v = getVehicle(id ?? '')
-  if (!v) return <Page title="차종 없음" back="/"><p>없는 차종입니다.</p></Page>
+  if (!v) return <div className="view-shell"><p>없는 차종입니다.</p></div>
   const m = MODES.find((x) => x.k === mode)?.k ?? 'chase'
   return (
-    <Page title={v.shortName} sub="3인칭 · 위에서 보기" back={`/v/${v.id}`}>
-      <div className="chips">
-        {MODES.map((x) => (
-          <Link key={x.k} to={`/v/${v.id}/view/${x.k}`} replace className={m === x.k ? 'chip on' : 'chip'}>{x.l}</Link>
-        ))}
-      </div>
+    <div className="view-shell">
+      <header className="view-top">
+        <button className="back sm" onClick={() => nav(`/v/${v.id}`)} aria-label="뒤로">‹</button>
+        <strong>{v.shortName}</strong>
+        <div className="chips">
+          {MODES.map((x) => (
+            <Link key={x.k} to={`/v/${v.id}/view/${x.k}`} replace className={m === x.k ? 'chip on' : 'chip'}>{x.l}</Link>
+          ))}
+        </div>
+        <small>교육용 도식</small>
+      </header>
       <DriveCanvas vehicle={v} mode={m} />
-    </Page>
+    </div>
   )
 }
