@@ -36,6 +36,7 @@ const GROUND = '#2b3326'
 const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', rl: '#4dd0e1', rr: '#69db7c' }
 const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
+const MAP_ZOOM = 2.5 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
 const TIME_LIMIT = 120 // 초
 const MAX_CONTACTS = 2 // 바퀴가 선을 넘은 횟수, 2번까지 허용
 const COURSE_VEHICLE = 'k511' // T·굴절·S 시험 코스는 두돈반만
@@ -165,8 +166,9 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const [showGuide, setShowGuide] = useState(true)
   const [showMap, setShowMap] = useState(false)
   const [zoom, setZoom] = useState(1)
-  const flags = useRef({ showTrail, showPredict, showGuide, showMap, zoom })
-  flags.current = { showTrail, showPredict, showGuide, showMap, zoom }
+  const mapZoom = MAP_ZOOM
+  const flags = useRef({ showTrail, showPredict, showGuide, showMap, zoom, mapZoom })
+  flags.current = { showTrail, showPredict, showGuide, showMap, zoom, mapZoom }
   const [hud, setHud] = useState({ speed: 0, dir: 'N' as 'D' | 'R' | 'N' })
   const [jui, setJui] = useState<Judge>(newJudge())
   const [showSpec, setShowSpec] = useState(false)
@@ -354,7 +356,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     }
 
     /** 코스 전체가 들어오는 고정 탑뷰(코스 없으면 차량 따라가기) */
-    const topCam = (w: number, h: number): Camera => {
+    const topCam = (w: number, h: number, mz = 1): Camera => {
       const g = geoRef.current
       const s = car.current
       const fl = flags.current
@@ -372,6 +374,12 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         oy = (Math.max(...ys) + Math.min(...ys)) / 2
         height = Math.max(bw / (0.78 * 1.24 * (w / mn)), bh / (0.78 * 1.24 * (h / mn)))
         if (modeRef.current === 'top') height /= fl.zoom
+        height /= mz
+        if (mz > 1.01) {
+          // 확대하면 내 차를 따라가며 간격을 자세히 볼 수 있게 한다
+          ox = s.x + Math.cos(s.yaw) * (g.wheelbase / 2)
+          oy = s.y + Math.sin(s.yaw) * (g.wheelbase / 2)
+        }
       }
       return { x: ox, y: oy, z: height, yaw: Math.PI / 2, pitch: Math.PI / 2 - 0.0001, f: mn / 2 / 0.62, w, h }
     }
@@ -559,11 +567,11 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       // 시험 모드: 위에서 본 내 위치 (북쪽이 위)
       if (courseRef.current && flags.current.showMap && m !== 'top') {
         const land = landRef.current
-        const mw = Math.round(Math.min(w * 0.62, h * (land ? 1.3 : 1.2)))
-        const mh = Math.round(Math.min(h * (land ? 0.6 : 0.74), mw * 0.8))
+        const mw = Math.round(Math.min(w * 0.7, h * (land ? 1.5 : 1.2)))
+        const mh = Math.round(Math.min(h * (land ? 0.66 : 0.74), mw * 0.8))
         const mx = Math.round((w - mw) / 2)
         const my = land ? 108 : 8
-        const cam = topCam(mw, mh)
+        const cam = topCam(mw, mh, flags.current.mapZoom)
         ctx.save()
         ctx.beginPath()
         ctx.roundRect(mx, my, mw, mh, 10)
@@ -772,7 +780,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         </div>
         <div className="gear-btns right">
           {(['D', 'N', 'R'] as Gear[]).map((g) => (
-            <button key={g} className={gearUi === g ? 'on' : ''} onClick={() => setGear(g)}>{g}</button>
+            <button key={g} className={gearUi === g ? 'on' : ''} onPointerDown={(e) => { e.preventDefault(); setGear(g) }}>{g}</button>
           ))}
         </div>
         <div className="cab-pedals two">
@@ -790,7 +798,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         <canvas ref={canvasRef} />
         {hudEl}
         <div className="zoom">
-          <button onClick={() => setZoom((z) => Math.min(3, z * 1.25))} aria-label="확대">＋</button>
+          <button onClick={() => setZoom((z) => Math.min(6, z * 1.25))} aria-label="확대">＋</button>
           <button onClick={() => setZoom((z) => Math.max(0.5, z / 1.25))} aria-label="축소">－</button>
         </div>
       </div>
