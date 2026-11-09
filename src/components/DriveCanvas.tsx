@@ -37,7 +37,8 @@ const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', 
 const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
 const MAP_ZOOM = 2.5 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
-const TIME_LIMIT = 120 // 초
+const TIME_LIMIT = 180 // 초 (3분 넘으면 실격)
+const SOFT_LIMIT = 120 // 2분 넘으면 감점 구간(감점 기준은 미확인)
 const MAX_CONTACTS = 2 // 바퀴가 선을 넘은 횟수, 2번까지 허용
 const COURSE_VEHICLE = 'k511' // T·굴절·S 시험 코스는 두돈반만
 const DIMS_KEY = 'drivers-guide.courseDims.v1'
@@ -277,7 +278,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       if (j.elapsed >= TIME_LIMIT) {
         j.elapsed = TIME_LIMIT
         j.failed = 'time'
-        toastRef.current = { text: '2분 초과 → 시험 종료', until: now + 3000 }
+        toastRef.current = { text: '3분 초과 → 시험 종료', until: now + 3000 }
         return
       }
 
@@ -703,15 +704,16 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     <div className={`status ${jui.done ? 'done' : ''}`}>
       <div className="row">
         <b>{course.name}</b>
-        <span className={jui.elapsed > 100 ? 'late' : ''}>{fmt(jui.elapsed)} / 2:00</span>
+        <span className={jui.elapsed > SOFT_LIMIT ? 'late' : ''}>{fmt(jui.elapsed)} / 3:00</span>
       </div>
       <div className="small desc">{course.description}</div>
       <div className="row small">
         <span>바퀴 접촉 <b className={jui.contacts ? 'bad' : ''}>{jui.contacts}</b> / {MAX_CONTACTS}회까지 허용</span>
       </div>
+      {!jui.failed && jui.elapsed > SOFT_LIMIT && <div className="small late">2분 초과 구간 (감점 기준은 미확인)</div>}
       {jui.failed && (
         <div className="fail">
-          <b>{jui.failed === 'time' ? '시간 초과(2분)' : `바퀴 접촉 ${MAX_CONTACTS + 1}회`} → 연습 종료</b>
+          <b>{jui.failed === 'time' ? '시간 초과(3분)' : `바퀴 접촉 ${MAX_CONTACTS + 1}회`} → 연습 종료</b>
           <button className="mini" onClick={reset}>다시 시작</button>
         </div>
       )}

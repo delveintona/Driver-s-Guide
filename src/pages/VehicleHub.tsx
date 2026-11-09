@@ -35,7 +35,7 @@ export default function VehicleHub() {
           <Link to={`/v/${v.id}/exam`} className="tile">
             <span className="icon" aria-hidden>📝</span>
             <strong>운전 시험</strong>
-            <span className="desc">굴절·S자·T자 · 2분 · 접촉 2회까지</span>
+            <span className="desc">굴절·S자·T자 · 3분 · 접촉 2회까지</span>
           </Link>
         ) : (
           <div className="tile disabled" aria-disabled>
