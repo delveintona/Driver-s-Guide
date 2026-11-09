@@ -829,8 +829,8 @@ function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o:
   const wallR = w * 1.85
   // 옆 창 유리(살짝 푸른 반사)
   ctx.fillStyle = 'rgba(120,160,200,0.06)'
-  ctx.fillRect(wallL, h * 0.05, w * 1.0, h * 0.6)
-  ctx.fillRect(w * 0.85, h * 0.05, wallR - w * 0.85, h * 0.6)
+  ctx.fillRect(wallL, h * 0.05, w * 1.0, h * 0.85)
+  ctx.fillRect(w * 0.85, h * 0.05, wallR - w * 0.85, h * 0.85)
   // 지붕 헤더 + 햇빛가리개 띠
   ctx.fillStyle = dark
   ctx.fillRect(-w * 5, 0, w * 11, h * 0.05)
@@ -846,10 +846,10 @@ function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o:
   ctx.closePath(); ctx.fill()
   // 도어 패널(창 아래) + 창틀 아래선
   ctx.fillStyle = '#1d2018'
-  ctx.beginPath(); ctx.moveTo(wallL, h * 0.66); ctx.lineTo(w * 0.17, h * 0.73); ctx.lineTo(w * 0.17, h * 2); ctx.lineTo(wallL, h * 2); ctx.closePath(); ctx.fill()
-  ctx.beginPath(); ctx.moveTo(wallR, h * 0.66); ctx.lineTo(w * 0.83, h * 0.73); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(wallR, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(wallL, h * 0.9); ctx.lineTo(w * 0.17, h * 0.94); ctx.lineTo(w * 0.17, h * 2); ctx.lineTo(wallL, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(wallR, h * 0.9); ctx.lineTo(w * 0.83, h * 0.94); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(wallR, h * 2); ctx.closePath(); ctx.fill()
   ctx.strokeStyle = '#3a3f33'; ctx.lineWidth = 3
-  ctx.beginPath(); ctx.moveTo(wallL, h * 0.66); ctx.lineTo(w * 0.17, h * 0.73); ctx.moveTo(wallR, h * 0.66); ctx.lineTo(w * 0.83, h * 0.73); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(wallL, h * 0.9); ctx.lineTo(w * 0.17, h * 0.94); ctx.moveTo(wallR, h * 0.9); ctx.lineTo(w * 0.83, h * 0.94); ctx.stroke()
   // 창 뒤쪽 기둥과 캐빈 뒷벽(고개를 끝까지 돌리면 보인다)
   ctx.fillStyle = dark
   ctx.fillRect(-w * 6, 0, w * 6 - w * 0.85, h * 2)
