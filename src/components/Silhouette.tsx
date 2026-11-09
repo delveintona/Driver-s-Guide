@@ -23,7 +23,7 @@ export function TopShape({ vehicle, x, yBottom, ghost }: TopProps) {
     <g>
       {!ghost && (
         <>
-          {[0, g.wheelbase].map((a) =>
+          {[...(g.tandem > 0 ? [-g.tandem / 2, g.tandem / 2] : [0]), g.wheelbase].map((a) =>
             [left - 0.02, left + g.W - 0.2].map((wx) => (
               <rect key={`${a}-${wx}`} x={wx} y={axleY(a) - 0.5} width={0.22} height={1} fill="#0b0b0b" rx={0.05} />
             )),
@@ -58,7 +58,7 @@ export function SideShape({ vehicle, x, yGround, ghost }: { vehicle: Vehicle; x:
       {!ghost && (
         <>
           <rect x={rear + g.L - cabLen + 0.15} y={yGround - g.H + 0.2} width={cabLen - 0.3} height={0.7} rx={0.08} fill="rgba(20,30,40,.75)" />
-          {[g.rearOverhang, g.rearOverhang + g.wheelbase].map((a) => (
+          {[...(g.tandem > 0 ? [g.rearOverhang - g.tandem / 2, g.rearOverhang + g.tandem / 2] : [g.rearOverhang]), g.rearOverhang + g.wheelbase].map((a) => (
             <circle key={a} cx={rear + a} cy={yGround - wheelR} r={wheelR} fill="#0b0b0b" stroke="#555" strokeWidth={0.04} />
           ))}
         </>

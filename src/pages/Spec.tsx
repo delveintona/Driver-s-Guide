@@ -20,6 +20,7 @@ export default function Spec() {
     ['앞 오버행', mm(d.frontOverhang), `도식용 가정 ${(g.frontOverhang * 1000).toLocaleString()} mm`],
     ['뒤 오버행', mm(d.rearOverhang)],
     ['전륜 트레드', mm(d.frontTrack)],
+    ['차축', g.tandem > 0 ? '3축 (6×6)' : '2축', g.tandem > 0 ? `뒤 두 축 간격은 도식용 가정 ${(g.tandem * 1000).toLocaleString()} mm` : undefined],
     ['최소회전반경', v.turning.minimumRadiusM == null ? null : `${v.turning.minimumRadiusM} m`],
     ['최대 조향각', null, `도식 계산 ${g.maxSteerDeg.toFixed(0)}°${g.steerAssumed ? ' (가정)' : ' (반경에서 환산)'}`],
   ]

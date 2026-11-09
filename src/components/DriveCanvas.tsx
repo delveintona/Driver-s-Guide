@@ -36,7 +36,7 @@ const GROUND = '#2b3326'
 const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', rl: '#4dd0e1', rr: '#69db7c' }
 const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
-const MAP_ZOOM = 2.5 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
+const MAP_ZOOM = 4 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
 const TIME_LIMIT = 180 // 초 (3분 넘으면 실격)
 const SOFT_LIMIT = 120 // 2분 넘으면 감점 구간(감점 기준은 미확인)
 const MAX_CONTACTS = 2 // 바퀴가 선을 넘은 횟수, 2번까지 허용
@@ -90,7 +90,7 @@ const toWorld = (s: { x: number; y: number; yaw: number }, l: number, side: numb
 
 function wheelPoints(s: CarState, g: Geo): V2[][] {
   const res: V2[][] = []
-  for (const a of [0, g.wheelbase]) {
+  for (const a of [...rearAxles(g), g.wheelbase]) {
     for (const side of [g.W / 2 - 0.15, -(g.W / 2 - 0.15)]) {
       const steer = a === g.wheelbase ? s.steer : 0
       const c = toWorld(s, a, side)
@@ -116,6 +116,7 @@ const bodyPoints = (s: CarState, g: Geo): V2[] => {
   const h = g.W / 2
   return [toWorld(s, f, h), toWorld(s, f, -h), toWorld(s, r, h), toWorld(s, r, -h)]
 }
+const rearAxles = (g: Geo) => (g.tandem > 0 ? [-g.tandem / 2, g.tandem / 2] : [0])
 const gearSign = (g: Gear) => (g === 'D' ? 1 : g === 'R' ? -1 : 0)
 
 /** 타보기 화면 핸들 위치(캔버스 px) */
@@ -488,6 +489,17 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       boxes.push(...vehicleBoxes(s, g, vehicle.color, m === 'cab'))
       boxes.sort((a, b) => boxDepth(cam, b) - boxDepth(cam, a))
       for (const b of boxes) drawBox(ctx, cam, b)
+
+      // 위에서 볼 때: 차체 아래에 가려진 바퀴를 지면 위치 그대로 위에 겹쳐 그린다
+      if (m === 'top') {
+        wheelPoints(s, g).forEach((pts, i, arr) => {
+          const front = i >= arr.length - 2 // 마지막 두 개 = 앞바퀴(조향)
+          const out = !!course && pts.some((pt) => !pointInPolygon(pt, course.polygon))
+          const poly = to3(pts, 0.04)
+          fillPolygon3(ctx, cam, poly, out ? 'rgba(255,60,60,0.9)' : 'rgba(10,10,10,0.9)')
+          drawPolyline3(ctx, cam, [...poly, poly[0]], { stroke: out ? '#ffffff' : front ? '#ffd23f' : '#ffffff', width: 2 })
+        })
+      }
 
       if (opts.labels) {
         ctx.font = '600 11px system-ui, sans-serif'
@@ -996,7 +1008,7 @@ function vehicleBoxes(s: CarState, g: Geo, color: string, hideCabTop = false): B
     const mp = at(mirrorFwd(g))
     boxes.push({ cx: mp.x - sin * lat, cy: mp.y + cos * lat, yaw: s.yaw, len: 0.14, wid: g.mirrorOut, z0: mz0, z1: mz1, fill: '#e8e8e8', stroke: '#222', alpha: 1 })
   }
-  for (const a of [0, g.wheelbase]) {
+  for (const a of [...rearAxles(g), g.wheelbase]) {
     for (const side of [g.W / 2 - 0.15, -(g.W / 2 - 0.15)]) {
       const p = at(a)
       const steer = a === g.wheelbase ? s.steer : 0

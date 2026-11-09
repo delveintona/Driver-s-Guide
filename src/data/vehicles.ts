@@ -54,6 +54,8 @@ export interface Vehicle {
     mirrorOutM: number
     /** 운전석 앞에 보닛이 보이는 차량인지(도식용) */
     hood: boolean
+    /** 뒤 두 축(탠덤)의 간격. 0이면 뒷축 1개. 공개 자료 없음 → 도식용 가정 */
+    tandemM: number
     assumedWheelbase: boolean
     assumedMaxSteerDeg: boolean
   }
@@ -98,6 +100,7 @@ export const VEHICLES: Vehicle[] = [
       cargoHeightM: 1.4,
       mirrorOutM: 0.25,
       hood: true,
+      tandemM: 0,
       assumedWheelbase: false,
       assumedMaxSteerDeg: false,
     },
@@ -143,6 +146,7 @@ export const VEHICLES: Vehicle[] = [
       cargoHeightM: 1.7,
       mirrorOutM: 0.25,
       hood: false,
+      tandemM: 0,
       assumedWheelbase: false,
       assumedMaxSteerDeg: false,
     },
@@ -187,6 +191,7 @@ export const VEHICLES: Vehicle[] = [
       cargoHeightM: 2.0,
       mirrorOutM: 0.25,
       hood: true,
+      tandemM: 1.3,
       assumedWheelbase: true,
       assumedMaxSteerDeg: false,
     },
@@ -231,6 +236,7 @@ export const VEHICLES: Vehicle[] = [
       cargoHeightM: 2.0,
       mirrorOutM: 0.25,
       hood: false,
+      tandemM: 0,
       assumedWheelbase: false,
       assumedMaxSteerDeg: true,
     },
@@ -274,6 +280,7 @@ export const VEHICLES: Vehicle[] = [
       cargoHeightM: 2.0,
       mirrorOutM: 0.25,
       hood: false,
+      tandemM: 0,
       assumedWheelbase: false,
       assumedMaxSteerDeg: true,
     },
@@ -363,6 +370,7 @@ export function vehicleGeometry(v: Vehicle) {
     cargoHeight: v.illustrative.cargoHeightM,
     mirrorOut: v.illustrative.mirrorOutM,
     hood: v.illustrative.hood,
+    tandem: v.illustrative.tandemM,
     maxSteerDeg,
     wheelbaseAssumed: v.dimensionsMm.wheelbase == null,
     steerAssumed: !(R != null && R > wheelbase),
