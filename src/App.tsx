@@ -1,7 +1,8 @@
 import { Route, Routes } from 'react-router-dom'
 import Home from './pages/Home'
 import VehicleHub from './pages/VehicleHub'
-import Drive from './pages/Drive'
+import Cab from './pages/Cab'
+import View from './pages/View'
 import Compare from './pages/Compare'
 import Spec from './pages/Spec'
 import Tips from './pages/Tips'
@@ -12,7 +13,9 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/v/:id" element={<VehicleHub />} />
-      <Route path="/v/:id/drive/:mode" element={<Drive />} />
+      <Route path="/v/:id/cab" element={<Cab />} />
+      <Route path="/v/:id/exam" element={<Cab exam />} />
+      <Route path="/v/:id/view/:mode" element={<View />} />
       <Route path="/v/:id/compare" element={<Compare />} />
       <Route path="/v/:id/spec" element={<Spec />} />
       <Route path="/v/:id/tips" element={<Tips />} />

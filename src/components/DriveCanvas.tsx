@@ -27,6 +27,8 @@ interface Props {
   headerSlot?: React.ReactNode
   /** 세로 화면을 90° 돌려 쓰는 중이면 터치 좌표도 돌려서 해석 */
   rotated?: boolean
+  /** 운전 시험 모드: 굴절·S자·T자 코스 + 접촉 2회 허용 + 2분 제한 */
+  exam?: boolean
 }
 
 const SKY: Record<DriveMode, string> = { cab: '#2a3a4a', chase: '#2a3a4a', top: '#1d2a1c' }
@@ -34,20 +36,23 @@ const GROUND = '#2b3326'
 const CORNER_COLOR: Record<CornerKey, string> = { fl: '#ff6b6b', fr: '#ffa94d', rl: '#4dd0e1', rr: '#69db7c' }
 const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
+const TIME_LIMIT = 120 // 초
+const MAX_CONTACTS = 2 // 바퀴가 선을 넘은 횟수, 2번까지 허용
 const COURSE_VEHICLE = 'k511' // T·굴절·S 시험 코스는 두돈반만
 const DIMS_KEY = 'drivers-guide.courseDims.v1'
 
 interface Judge {
   contacts: number
-  bodyWarn: number
-  mirrorWarn: number
+
+
   started: number | null
   elapsed: number
+  failed: 'contacts' | 'time' | null
   done: boolean
   touched: boolean
   marks: V2[]
 }
-const newJudge = (): Judge => ({ contacts: 0, bodyWarn: 0, mirrorWarn: 0, started: null, elapsed: 0, done: false, touched: false, marks: [] })
+const newJudge = (): Judge => ({ contacts: 0, started: null, elapsed: 0, failed: null, done: false, touched: false, marks: [] })
 
 function loadDims(): CourseDims {
   try {
@@ -103,10 +108,6 @@ function wheelPoints(s: CarState, g: Geo): V2[][] {
 
 const mirrorFwd = (g: Geo) => g.wheelbase + g.frontOverhang - 0.2
 const eyeOf = (s: CarState, g: Geo) => toWorld(s, g.wheelbase + g.frontOverhang - 1.9, 0.3)
-const mirrorTips = (s: CarState, g: Geo) => {
-  const side = g.W / 2 + g.mirrorOut
-  return [toWorld(s, mirrorFwd(g), side), toWorld(s, mirrorFwd(g), -side)]
-}
 const bodyPoints = (s: CarState, g: Geo): V2[] => {
   const f = g.wheelbase + g.frontOverhang
   const r = -g.rearOverhang
@@ -121,7 +122,7 @@ const wheelLayout = (w: number, h: number) => {
   return { cx: w * 0.47, cy: h * 0.9, r, ry: r * 0.42 }
 }
 
-export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rotated }: Props) {
+export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rotated, exam }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const geo = vehicleGeometry(vehicle)
@@ -134,8 +135,8 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const hoodRef = useRef(geo.hood)
   hoodRef.current = geo.hood
 
-  const courseOk = vehicle.id === COURSE_VEHICLE
-  const [courseId, setCourseId] = useState<CourseId>('free')
+  const courseOk = !!exam && vehicle.id === COURSE_VEHICLE
+  const [courseId, setCourseId] = useState<CourseId>(exam ? 'gul' : 'free')
   const [dims, setDims] = useState<CourseDims>(loadDims)
   const course = useMemo(
     () => (courseOk && courseId !== 'free' ? getCourse(courseId, dims) : null),
@@ -154,7 +155,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const trail = useRef<Record<CornerKey, Pt3[]>>({ fl: [], fr: [], rl: [], rr: [] })
   const camYaw = useRef(START.yaw)
   const judge = useRef<Judge>(newJudge())
-  const wasOut = useRef({ wheel: false, body: false, mirror: false })
+  const wasOut = useRef({ wheel: false })
   const toastRef = useRef<{ text: string; until: number } | null>(null)
 
   const [steerUi, setSteerUi] = useState(0)
@@ -189,7 +190,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     gearRef.current = 'D'
     setGearUi('D')
     judge.current = newJudge()
-    wasOut.current = { wheel: false, body: false, mirror: false }
+    wasOut.current = { wheel: false }
     setSteerUi(0)
     setJui(newJudge())
   }
@@ -269,27 +270,27 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       const s = car.current
       const g = geoRef.current
       if (j.started == null && Math.abs(s.v) > 0.05) j.started = now
-      if (j.started != null && !j.done) j.elapsed = (now - j.started) / 1000
-      if (j.done) return
+      if (j.started != null && !j.done && !j.failed) j.elapsed = (now - j.started) / 1000
+      if (j.done || j.failed) return
+      if (j.elapsed >= TIME_LIMIT) {
+        j.elapsed = TIME_LIMIT
+        j.failed = 'time'
+        toastRef.current = { text: '2분 초과 → 시험 종료', until: now + 3000 }
+        return
+      }
 
       const wheelOut = wheelPoints(s, g).flat().find((p) => !pointInPolygon(p, course.polygon))
       if (wheelOut && !wasOut.current.wheel) {
         j.contacts++
         j.marks.push(wheelOut)
-        toastRef.current = { text: '검지선 접촉 (바퀴)', until: now + 1400 }
+        if (j.contacts > MAX_CONTACTS) {
+          j.failed = 'contacts'
+          toastRef.current = { text: `검지선 접촉 ${j.contacts}회 → 시험 종료`, until: now + 3000 }
+        } else {
+          toastRef.current = { text: `검지선 접촉 ${j.contacts}/${MAX_CONTACTS} (바퀴)`, until: now + 1400 }
+        }
       }
       wasOut.current.wheel = !!wheelOut
-
-      const bodyOut = bodyPoints(s, g).find((p) => !pointInPolygon(p, course.polygon))
-      if (bodyOut && !wasOut.current.body) j.bodyWarn++
-      wasOut.current.body = !!bodyOut
-
-      const mirrorOut = mirrorTips(s, g).find((p) => !pointInPolygon(p, course.polygon))
-      if (mirrorOut && !wasOut.current.mirror) {
-        j.mirrorWarn++
-        toastRef.current = { text: '후사경이 코스 밖으로 나감', until: now + 1400 }
-      }
-      wasOut.current.mirror = !!mirrorOut
 
       if (course.finish) {
         const f = course.finish
@@ -318,7 +319,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       const maxV = input.current.gas >= 0 ? 3 : 1.6
       let targetV = input.current.gas * maxV
       let acc = input.current.gas === 0 ? 4 : 1.6
-      if (input.current.brake) { targetV = 0; acc = 8 }
+      if (input.current.brake || judge.current.failed) { targetV = 0; acc = 8 }
       s.v += Math.sign(targetV - s.v) * Math.min(Math.abs(targetV - s.v), acc * dt)
       const maxSteer = (g.maxSteerDeg * Math.PI) / 180
       const targetSteer = -steerRef.current * maxSteer // 핸들 오른쪽(+) = 우회전
@@ -399,7 +400,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         const p = eyeOf(s, g)
         Object.assign(cam, {
           x: p.x, y: p.y, z: Math.min(g.H - 0.25, g.H * 0.78 + 0.15),
-          yaw: s.yaw + look.current.yaw, pitch: 0.04 - look.current.pitch, f: w * 0.42,
+          yaw: s.yaw + look.current.yaw, pitch: 0.04 - look.current.pitch, f: w * 0.33,
         })
       }
       return cam
@@ -522,7 +523,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         const s = car.current
         const f = cam0.f
         const lk = look.current
-        const dx = f * Math.tan(Math.max(-1.2, Math.min(1.2, lk.yaw)))
+        const dx = f * Math.tan(Math.max(-1.25, Math.min(1.25, lk.yaw)))
         const dy = f * Math.tan(lk.pitch)
         drawCabInterior(ctx, w, h, {
           steer: steerRef.current, gear: gearRef.current, hood: hoodRef.current,
@@ -645,9 +646,9 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
 
   const setSteer = (v: number) => { steerRef.current = v; setSteerUi(v) }
   const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`
-  const courseIds: CourseId[] = courseOk ? ['free', 'gul', 's', 'turn'] : ['free']
+  const courseIds: CourseId[] = courseOk ? ['gul', 's', 'turn'] : []
 
-  const courseChips = (
+  const courseChips = !exam ? null : (
     <div className="chips course-chips">
       {courseIds.map((c) => (
         <button key={c} className={courseId === c ? 'on' : ''} onClick={() => setCourseId(c)}>{COURSE_LABEL[c]}</button>
@@ -694,16 +695,20 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     <div className={`status ${jui.done ? 'done' : ''}`}>
       <div className="row">
         <b>{course.name}</b>
-        <span className={jui.elapsed > 120 ? 'late' : ''}>{fmt(jui.elapsed)} / 2:00</span>
+        <span className={jui.elapsed > 100 ? 'late' : ''}>{fmt(jui.elapsed)} / 2:00</span>
       </div>
       <div className="small desc">{course.description}</div>
       <div className="row small">
-        <span>검지선 접촉(바퀴) <b className={jui.contacts ? 'bad' : ''}>{jui.contacts}</b></span>
-        <span>후사경 이탈 <b className={jui.mirrorWarn ? 'warn' : ''}>{jui.mirrorWarn}</b></span>
-        <span>차체 이탈 <b className={jui.bodyWarn ? 'warn' : ''}>{jui.bodyWarn}</b></span>
+        <span>바퀴 접촉 <b className={jui.contacts ? 'bad' : ''}>{jui.contacts}</b> / {MAX_CONTACTS}회까지 허용</span>
       </div>
+      {jui.failed && (
+        <div className="fail">
+          <b>{jui.failed === 'time' ? '시간 초과(2분)' : `바퀴 접촉 ${MAX_CONTACTS + 1}회`} → 연습 종료</b>
+          <button className="mini" onClick={reset}>다시 시작</button>
+        </div>
+      )}
       {course.garage && <div className="small">확인선 {jui.touched ? '✔ 닿음 → 전진으로 나오세요' : '아직'}</div>}
-      <div className="small goal">{jui.done ? '✔ 연습 완료 (공식 판정 아님)' : course.goal}</div>
+      <div className="small goal">{jui.done ? '✔ 통과 (연습 기록, 공식 판정 아님)' : course.goal}</div>
       <button className="mini" onClick={() => setShowSpec((v) => !v)}>{showSpec ? '닫기' : '코스 치수 입력/수정'}</button>
       {showSpec && dimEditor}
     </div>
@@ -771,7 +776,6 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   return (
     <div className="drive">
       {courseChips}
-      {!courseOk && <p className="fineprint">T자·굴절·S자 시험 코스는 두돈반(K511)만 지원합니다.</p>}
       <div className="canvas-wrap" ref={wrapRef}>
         <canvas ref={canvasRef} />
         {hudEl}
@@ -820,43 +824,54 @@ function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o:
   const dark = '#14160f'
   const sleeve = '#4b5a2e'
   const skin = '#d9a47a'
+  // 운전석 안쪽 좌표계: 정면 화면이 0~w. 옆 창은 A필러 바깥쪽(왼쪽 -0.85w까지, 오른쪽 1.85w까지)에 이어진다.
+  const wallL = -w * 0.85
+  const wallR = w * 1.85
+  // 옆 창 유리(살짝 푸른 반사)
+  ctx.fillStyle = 'rgba(120,160,200,0.06)'
+  ctx.fillRect(wallL, h * 0.05, w * 1.0, h * 0.6)
+  ctx.fillRect(w * 0.85, h * 0.05, wallR - w * 0.85, h * 0.6)
   // 지붕 헤더 + 햇빛가리개 띠
   ctx.fillStyle = dark
-  ctx.fillRect(-w * 3, 0, w * 7, h * 0.07)
-  ctx.fillStyle = 'rgba(20,40,60,.28)'
-  ctx.fillRect(w * 0.1, h * 0.07, w * 0.8, h * 0.06)
+  ctx.fillRect(-w * 5, 0, w * 11, h * 0.05)
+  ctx.fillStyle = 'rgba(20,40,60,.25)'
+  ctx.fillRect(w * 0.12, h * 0.05, w * 0.76, h * 0.04)
   // A필러
   ctx.fillStyle = dark
   ctx.beginPath()
-  ctx.moveTo(w * 0.095, h * 0.07); ctx.lineTo(w * 0.135, h * 0.07); ctx.lineTo(w * 0.205, h * 0.7); ctx.lineTo(w * 0.165, h * 0.7)
+  ctx.moveTo(w * 0.105, h * 0.05); ctx.lineTo(w * 0.135, h * 0.05); ctx.lineTo(w * 0.2, h * 0.73); ctx.lineTo(w * 0.17, h * 0.73)
   ctx.closePath(); ctx.fill()
   ctx.beginPath()
-  ctx.moveTo(w * 0.905, h * 0.07); ctx.lineTo(w * 0.865, h * 0.07); ctx.lineTo(w * 0.795, h * 0.7); ctx.lineTo(w * 0.835, h * 0.7)
+  ctx.moveTo(w * 0.895, h * 0.05); ctx.lineTo(w * 0.865, h * 0.05); ctx.lineTo(w * 0.8, h * 0.73); ctx.lineTo(w * 0.83, h * 0.73)
   ctx.closePath(); ctx.fill()
-  // 옆 창틀
-  ctx.fillRect(0, 0, w * 0.012, h)
-  ctx.fillRect(w * 0.988, 0, w * 0.012, h)
-  ctx.fillRect(-w * 3, h * 0.07, w * 3.1, h * 0.012)
-  ctx.fillRect(w * 0.9, h * 0.07, w * 3.1, h * 0.012)
-  // 도어 패널(창 아래)
+  // 도어 패널(창 아래) + 창틀 아래선
   ctx.fillStyle = '#1d2018'
-  ctx.beginPath(); ctx.moveTo(-w * 3, h * 0.64); ctx.lineTo(w * 0.17, h * 0.7); ctx.lineTo(w * 0.17, h * 2); ctx.lineTo(-w * 3, h * 2); ctx.closePath(); ctx.fill()
-  ctx.beginPath(); ctx.moveTo(w * 4, h * 0.64); ctx.lineTo(w * 0.83, h * 0.7); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(w * 4, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(wallL, h * 0.66); ctx.lineTo(w * 0.17, h * 0.73); ctx.lineTo(w * 0.17, h * 2); ctx.lineTo(wallL, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(wallR, h * 0.66); ctx.lineTo(w * 0.83, h * 0.73); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(wallR, h * 2); ctx.closePath(); ctx.fill()
+  ctx.strokeStyle = '#3a3f33'; ctx.lineWidth = 3
+  ctx.beginPath(); ctx.moveTo(wallL, h * 0.66); ctx.lineTo(w * 0.17, h * 0.73); ctx.moveTo(wallR, h * 0.66); ctx.lineTo(w * 0.83, h * 0.73); ctx.stroke()
+  // 창 뒤쪽 기둥과 캐빈 뒷벽(고개를 끝까지 돌리면 보인다)
+  ctx.fillStyle = dark
+  ctx.fillRect(-w * 6, 0, w * 6 - w * 0.85, h * 2)
+  ctx.fillRect(wallR, 0, w * 6, h * 2)
+  ctx.fillStyle = '#26291f'
+  ctx.fillRect(wallL - 6, 0, 6, h * 2)
+  ctx.fillRect(wallR, 0, 6, h * 2)
   // 룸미러
   ctx.fillStyle = '#0c0d0a'
-  ctx.beginPath(); ctx.roundRect(w * 0.46, h * 0.075, w * 0.08, h * 0.05, 4); ctx.fill()
+  ctx.beginPath(); ctx.roundRect(w * 0.46, h * 0.06, w * 0.08, h * 0.045, 4); ctx.fill()
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1; ctx.stroke()
   // 보닛
   if (o.hood) {
     ctx.fillStyle = shade(o.color, -35)
-    ctx.beginPath(); ctx.moveTo(w * 0.3, h * 0.7); ctx.lineTo(w * 0.7, h * 0.7); ctx.lineTo(w * 0.6, h * 0.63); ctx.lineTo(w * 0.4, h * 0.63); ctx.closePath(); ctx.fill()
+    ctx.beginPath(); ctx.moveTo(w * 0.3, h * 0.73); ctx.lineTo(w * 0.7, h * 0.73); ctx.lineTo(w * 0.6, h * 0.67); ctx.lineTo(w * 0.4, h * 0.67); ctx.closePath(); ctx.fill()
     ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 1.5; ctx.stroke()
   }
   // 대시보드
-  const dg = ctx.createLinearGradient(0, h * 0.68, 0, h)
+  const dg = ctx.createLinearGradient(0, h * 0.71, 0, h)
   dg.addColorStop(0, '#2a2d24'); dg.addColorStop(1, '#101109')
   ctx.fillStyle = dg
-  ctx.beginPath(); ctx.moveTo(w * 0.17, h * 0.7); ctx.quadraticCurveTo(w * 0.5, h * 0.66, w * 0.83, h * 0.7); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(w * 0.17, h * 2); ctx.closePath(); ctx.fill()
+  ctx.beginPath(); ctx.moveTo(w * 0.17, h * 0.73); ctx.quadraticCurveTo(w * 0.5, h * 0.69, w * 0.83, h * 0.73); ctx.lineTo(w * 0.83, h * 2); ctx.lineTo(w * 0.17, h * 2); ctx.closePath(); ctx.fill()
   // 속도계
   const gx = w * 0.3, gy = h * 0.84, gr = h * 0.085
   ctx.fillStyle = '#0a0b08'; ctx.beginPath(); ctx.arc(gx, gy, gr, 0, Math.PI * 2); ctx.fill()

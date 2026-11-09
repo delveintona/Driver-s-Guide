@@ -160,3 +160,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .cab-note { top: 44px; right: 10px; }
 
 .cab-note { top: auto; right: auto; left: 50%; bottom: 76px; transform: translateX(-50%); max-width: 60%; text-align: center; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 8px; font-size: 11px; color: #fff; pointer-events: none; animation: fade 7s forwards; }
+
+.tile.disabled { opacity: .45; }
+.status .fail { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--bad); font-size: 13px; }
