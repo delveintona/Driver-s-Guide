@@ -191,3 +191,14 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .view-toggles { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 6px; }
 .view-toggles button { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: rgba(0,0,0,.6); color: #cfd8c4; }
 .view-toggles button.on { background: var(--accent); color: #17200c; border-color: var(--accent); }
+
+/* 도로주행 HUD */
+.cab-top .hud.road-hud { gap: 6px; padding: 4px 12px; }
+.road-hud b { font-size: 20px; font-variant-numeric: tabular-nums; min-width: 2ch; text-align: right; }
+.road-hud b.over { color: var(--bad); }
+.road-hud small { color: var(--muted); font-size: 11px; }
+.road-hud .limit { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #d33; background: #fff; color: #111; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
+.road-hud .rname { font-size: 12px; color: #cfd8c4; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.road-hud .rname.off { color: var(--warn); font-weight: 700; }
+
+.osm-credit { position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); margin: 0; font-size: 10px; color: rgba(255,255,255,.7); pointer-events: none; white-space: nowrap; }

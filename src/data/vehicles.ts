@@ -340,6 +340,7 @@ export const SOURCES: Source[] = [
   { id: 'S14', title: '도로교통공단 교통안전 교육센터', kind: 'official', url: 'https://trafficedu.koroad.or.kr/' },
   { id: 'S15', title: 'Kia Special Vehicle, K511A1 카고 (최소회전반경 11.0 m)', kind: 'official', url: 'https://special.kia.com/kr/kia/vehicles/k51-series/k511a1-cargo-truck.do' },
   { id: 'S16', title: '도로교통법 시행규칙 별표 23 (기능시험코스의 종류·형상 및 구조, 제1종 대형면허, 개정 2026. 2. 24.)', kind: 'official', url: 'https://www.law.go.kr/LSW/flDownload.do?flSeq=168840585' },
+  { id: 'S17', title: '동송터미널 주변 5 km 도로·건물 지도 데이터 (© OpenStreetMap contributors, ODbL 1.0)', kind: 'secondary', url: 'https://www.openstreetmap.org/copyright' },
   { id: 'X1', title: 'K511 치수 참고 (나무위키)', kind: 'secondary', url: 'https://namu.wiki/w/K-511?from=K511' },
   { id: 'X5', title: 'K151 축거 3.3 m(단축)/4.0 m(장축) 참고 (나무위키)', kind: 'secondary', url: 'https://en.namu.wiki/w/K-151' },
   { id: 'X2', title: 'K511 / K151 치수 참고 (리브레위키)', kind: 'secondary', url: 'https://librewiki.net/wiki/K151' },

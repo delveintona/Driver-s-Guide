@@ -44,6 +44,11 @@ export default function VehicleHub() {
             <span className="desc">두돈반(K511)만 지원</span>
           </div>
         )}
+        <Link to={`/v/${v.id}/road`} className="tile">
+          <span className="icon" aria-hidden>🛣️</span>
+          <strong>도로주행</strong>
+          <span className="desc">동송터미널 주변 5km · 최대 60km/h</span>
+        </Link>
       </div>
     </Page>
   )

@@ -14,6 +14,7 @@ import {
   type Course, type CourseDims, type CourseId, type V2,
 } from '../lib/courses'
 import SteeringWheel, { WHEEL_LOCK_DEG } from './SteeringWheel'
+import { getWorld, roadAt, startPose, type RoadHit } from '../lib/roadworld'
 
 export type DriveMode = 'cab' | 'chase' | 'top'
 type Geo = ReturnType<typeof vehicleGeometry>
@@ -29,6 +30,8 @@ interface Props {
   rotated?: boolean
   /** 운전 시험 모드: 굴절·S자·T자 코스 + 접촉 2회 허용 + 2분 제한 */
   exam?: boolean
+  /** 도로주행: 철원 동송 지도(OpenStreetMap) 위를 최대 60km/h로 */
+  road?: boolean
 }
 
 const SKY: Record<DriveMode, string> = { cab: '#2a3a4a', chase: '#2a3a4a', top: '#1d2a1c' }
@@ -38,6 +41,7 @@ const WHEEL_LEN = 1.0
 const WHEEL_WID = 0.3
 const MAP_PX_PER_M = 22 // 시험 모드 지도 축척: 어느 코스든 1 m가 이 픽셀 수
 const MAP_ZOOM = 4 // 시험 모드 '위에서 보기': 내 차를 따라가며 선과의 간격이 보이는 배율
+const MAX_ROAD_V = 60 / 3.6 // 도로주행 최고속도 60km/h
 const TIME_LIMIT = 180 // 초 (3분 넘으면 실격)
 const SOFT_LIMIT = 120 // 2분 넘으면 감점 구간(감점 기준은 미확인)
 const MAX_CONTACTS = 2 // 바퀴가 선을 넘은 횟수, 2번까지 허용
@@ -72,7 +76,11 @@ function loadDims(): CourseDims {
   return structuredClone(DEFAULT_DIMS)
 }
 
-function startState(g: Geo, course: Course | null): CarState {
+function startState(g: Geo, course: Course | null, road?: boolean): CarState {
+  if (road) {
+    const sp = startPose()
+    return { x: sp.x, y: sp.y, yaw: sp.yaw, steer: 0, v: 0 }
+  }
   if (!course) return { ...START }
   const dir = { x: Math.cos(course.start.yaw), y: Math.sin(course.start.yaw) }
   return {
@@ -126,7 +134,7 @@ const wheelLayout = (w: number, h: number) => {
   return { cx: w * 0.47, cy: h * 0.9, r, ry: r * 0.42 }
 }
 
-export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rotated, exam }: Props) {
+export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rotated, exam, road }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const geo = vehicleGeometry(vehicle)
@@ -138,6 +146,9 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   landRef.current = !!landscape
   const hoodRef = useRef(geo.hood)
   hoodRef.current = geo.hood
+  const roadRef = useRef(!!road)
+  roadRef.current = !!road
+  const roadInfo = useRef<RoadHit | null>(null)
 
   const courseOk = !!exam && vehicle.id === COURSE_VEHICLE
   const [courseId, setCourseId] = useState<CourseId>(exam ? 'gul' : 'free')
@@ -172,7 +183,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const mapZoom = MAP_ZOOM
   const flags = useRef({ showTrail, showPredict, showGuide, showMap, zoom, mapZoom })
   flags.current = { showTrail, showPredict, showGuide, showMap, zoom, mapZoom }
-  const [hud, setHud] = useState({ speed: 0, dir: 'N' as 'D' | 'R' | 'N' })
+  const [hud, setHud] = useState({ speed: 0, dir: 'N' as 'D' | 'R' | 'N', limit: 0, road: '', off: false })
   const [jui, setJui] = useState<Judge>(newJudge())
   const [showSpec, setShowSpec] = useState(false)
   const [dim, setDim] = useState({ w: 800, h: 360 })
@@ -186,7 +197,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   }
 
   const reset = () => {
-    car.current = startState(geoRef.current, courseRef.current)
+    car.current = startState(geoRef.current, courseRef.current, roadRef.current)
     trail.current = { fl: [], fr: [], rl: [], rr: [] }
     camYaw.current = car.current.yaw
     steerRef.current = 0
@@ -321,14 +332,22 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       if (input.current.key !== 0) {
         steerRef.current = Math.max(-1, Math.min(1, steerRef.current + input.current.key * dt * 0.9))
       }
-      const maxV = input.current.gas >= 0 ? 3 : 1.6
+      const rd = roadRef.current
+      if (rd) roadInfo.current = roadAt(s.x, s.y, 0.5)
+      const offRoad = rd && !roadInfo.current
+      const fwdMax = rd ? (offRoad ? 6 : MAX_ROAD_V) : 3
+      const maxV = input.current.gas >= 0 ? fwdMax : rd ? 3 : 1.6
       let targetV = input.current.gas * maxV
-      let acc = input.current.gas === 0 ? 4 : 1.6
-      if (input.current.brake || judge.current.failed) { targetV = 0; acc = 8 }
+      let acc = input.current.gas === 0 ? (rd ? 0.6 : 4) : rd && input.current.gas > 0 ? 2.6 - 1.7 * Math.min(1, Math.abs(s.v) / MAX_ROAD_V) : 1.6
+      if (rd && offRoad && s.v > fwdMax) { targetV = fwdMax; acc = 3 } // 도로 밖(풀밭)에서는 속도가 빠르게 줄어든다
+      if (input.current.brake || judge.current.failed) { targetV = 0; acc = rd ? 7 : 8 }
       s.v += Math.sign(targetV - s.v) * Math.min(Math.abs(targetV - s.v), acc * dt)
       const maxSteer = (g.maxSteerDeg * Math.PI) / 180
-      const targetSteer = -steerRef.current * maxSteer // 핸들 오른쪽(+) = 우회전
-      const rate = 0.7 * dt
+      // 도로주행: 속도가 빠를수록 같은 핸들 각도에서 앞바퀴가 덜 꺾이게 한다(옆가속도 약 3.2 m/s² 이내)
+      const vAbs = Math.abs(s.v)
+      const effMax = rd ? Math.min(maxSteer, Math.atan((3.2 * g.wheelbase) / Math.max(vAbs * vAbs, 1))) : maxSteer
+      const targetSteer = -steerRef.current * effMax // 핸들 오른쪽(+) = 우회전
+      const rate = (rd ? 0.5 : 0.7) * dt
       s.steer += Math.sign(targetSteer - s.steer) * Math.min(Math.abs(targetSteer - s.steer), rate)
       car.current = stepCar(s, g, dt)
 
@@ -349,7 +368,14 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       if (hudAcc > 0.12) {
         hudAcc = 0
         const v = car.current.v
-        setHud({ speed: Math.abs(v) * 3.6, dir: Math.abs(v) < 0.05 ? 'N' : v > 0 ? 'D' : 'R' })
+        const ri = roadInfo.current
+        setHud({
+          speed: Math.abs(v) * 3.6,
+          dir: Math.abs(v) < 0.05 ? 'N' : v > 0 ? 'D' : 'R',
+          limit: ri ? ri.road.limit : 0,
+          road: ri ? ri.road.name || '이름 없는 도로' : '',
+          off: roadRef.current && !ri,
+        })
         if (input.current.key !== 0) setSteerUi(steerRef.current)
         if (courseRef.current) setJui({ ...judge.current })
       }
@@ -366,6 +392,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       const mn = Math.min(w, h)
       const c = courseRef.current
       let height = (g.L * 2.2 + 8) / fl.zoom
+      if (roadRef.current && !c) height = 80
       let ox = s.x + Math.cos(s.yaw) * (g.wheelbase / 2)
       let oy = s.y + Math.sin(s.yaw) * (g.wheelbase / 2) + 0.01
       if (c) {
@@ -419,7 +446,41 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       return cam
     }
 
-    const drawWorld = (ctx: CanvasRenderingContext2D, cam: Camera, m: DriveMode, opts: { labels: boolean }) => {
+    /** 동송 도로·건물을 그린다(가까운 것만) */
+    const drawRoadWorld = (ctx: CanvasRenderingContext2D, cam: Camera, m: DriveMode, light: boolean) => {
+      const wd = getWorld()
+      const R = light ? 100 : m === 'top' ? 120 : 230
+      const nearBox = (b: [number, number, number, number]) => !(b[0] > cam.x + R || b[2] < cam.x - R || b[1] > cam.y + R || b[3] < cam.y - R)
+      const rs = wd.roads.filter((r) => nearBox(r.bbox))
+      for (const r of rs) fillPolygon3(ctx, cam, to3(r.poly, 0.01), r.k === 'v' ? '#585b5e' : '#4a4d52')
+      for (const r of rs) {
+        if (r.width >= 5.5) {
+          drawPolyline3(ctx, cam, to3(r.left, 0.02), { stroke: 'rgba(235,235,235,0.75)', width: 1.4 })
+          drawPolyline3(ctx, cam, to3(r.right, 0.02), { stroke: 'rgba(235,235,235,0.75)', width: 1.4 })
+        }
+        if (!r.oneway && r.width >= 6) drawPolyline3(ctx, cam, to3(r.pts, 0.02), { stroke: '#ffd23f', width: 1.6, dash: [10, 10] })
+      }
+      const dist = (x: number, y: number) => Math.hypot(x - cam.x, y - cam.y)
+      const bl = wd.buildings.filter((b) => dist(b.cx, b.cy) < R).sort((a, b) => dist(b.cx, b.cy) - dist(a.cx, a.cy))
+      for (const b of bl) {
+        const n = b.pts.length
+        const edges = b.pts.map((a, i) => {
+          const c = b.pts[(i + 1) % n]
+          return { a, c, d: dist((a.x + c.x) / 2, (a.y + c.y) / 2) }
+        }).sort((x, y) => y.d - x.d)
+        edges.forEach((e, i) => {
+          const quad: Pt3[] = [
+            { x: e.a.x, y: e.a.y, z: 0 }, { x: e.c.x, y: e.c.y, z: 0 },
+            { x: e.c.x, y: e.c.y, z: b.h }, { x: e.a.x, y: e.a.y, z: b.h },
+          ]
+          fillPolygon3(ctx, cam, quad, i % 2 ? '#a39d90' : '#908b7f')
+          drawPolyline3(ctx, cam, [...quad, quad[0]], { stroke: 'rgba(0,0,0,0.35)', width: 1 })
+        })
+        fillPolygon3(ctx, cam, b.pts.map((p) => ({ x: p.x, y: p.y, z: b.h })), '#6d7470')
+      }
+    }
+
+    const drawWorld = (ctx: CanvasRenderingContext2D, cam: Camera, m: DriveMode, opts: { labels: boolean; light?: boolean }) => {
       const g = geoRef.current
       const s = car.current
       const fl = flags.current
@@ -428,14 +489,14 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       ctx.fillStyle = SKY[m]
       ctx.fillRect(0, 0, w, h)
 
-      ctx.fillStyle = GROUND
+      ctx.fillStyle = roadRef.current ? '#3d4a2c' : GROUND
       if (m !== 'top') {
         const hz = project(cam, { x: cam.x + Math.cos(cam.yaw) * 400, y: cam.y + Math.sin(cam.yaw) * 400, z: 0 })
         const hy = hz ? hz[1] : h / 2
         ctx.fillRect(0, Math.max(0, hy), w, h - Math.max(0, hy))
       } else ctx.fillRect(0, 0, w, h)
 
-      const gridR = m === 'top' ? Math.ceil(cam.z * 0.9) : 40
+      const gridR = roadRef.current ? -1 : m === 'top' ? Math.ceil(cam.z * 0.9) : 40
       const gx0 = Math.floor(cam.x - gridR)
       const gy0 = Math.floor(cam.y - gridR)
       for (let i = 0; i <= gridR * 2; i++) {
@@ -454,9 +515,11 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           drawPolyline3(ctx, cam, to3([{ x: p.x - 0.25, y: p.y }, { x: p.x + 0.25, y: p.y }], 0.05), { stroke: '#ff3b3b', width: 4 })
           drawPolyline3(ctx, cam, to3([{ x: p.x, y: p.y - 0.25 }, { x: p.x, y: p.y + 0.25 }], 0.05), { stroke: '#ff3b3b', width: 4 })
         }
-      } else {
+      } else if (!roadRef.current) {
         for (const ln of groundLines()) drawPolyline3(ctx, cam, ln.pts, { stroke: ln.color, width: ln.width, dash: ln.dash })
       }
+
+      if (roadRef.current) drawRoadWorld(ctx, cam, m, !!opts.light)
 
       if (fl.showTrail) {
         for (const k of ['fl', 'fr', 'rl', 'rr'] as CornerKey[]) drawPolyline3(ctx, cam, trail.current[k], { stroke: CORNER_COLOR[k], width: 1.5 })
@@ -485,9 +548,20 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       }
 
       const boxes: Box[] = []
-      if (!course) {
+      if (!course && !roadRef.current) {
         for (const r of scene.current.refs) boxes.push(...r.boxes)
         boxes.push(...scene.current.cones)
+      }
+      if (roadRef.current) {
+        const near = getWorld().trees
+          .map((t) => ({ t, d: Math.hypot(t.x - cam.x, t.y - cam.y) }))
+          .filter((o) => o.d < (opts.light ? 45 : 90))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, opts.light ? 15 : 80)
+        for (const { t } of near) {
+          boxes.push({ cx: t.x, cy: t.y, yaw: 0, len: 0.35, wid: 0.35, z0: 0, z1: 2.2, fill: '#5b4430', stroke: '#2a1d10', alpha: 1 })
+          boxes.push({ cx: t.x, cy: t.y, yaw: 0, len: 2.6, wid: 2.6, z0: 2.2, z1: t.h, fill: '#3f7a3a', stroke: '#1f3d1d', alpha: 1 })
+        }
       }
       boxes.push(...vehicleBoxes(s, g, vehicle.color, m === 'cab'))
       boxes.sort((a, b) => boxDepth(cam, b) - boxDepth(cam, a))
@@ -551,7 +625,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         const dy = f * Math.tan(lk.pitch)
         drawCabInterior(ctx, w, h, {
           steer: steerRef.current, gear: gearRef.current, hood: hoodRef.current,
-          speed: Math.abs(s.v) * 3.6, color: vehicle.color, lever: leverUntil.current > now, now, dx, dy,
+          speed: Math.abs(s.v) * 3.6, vmax: roadRef.current ? 80 : 20, color: vehicle.color, lever: leverUntil.current > now, now, dx, dy,
         })
         // 후사경: 실제 후사경 위치에 붙어 있어서, 고개를 돌려야 보인다
         for (const side of [1, -1] as const) {
@@ -567,7 +641,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
           ctx.clip()
           ctx.translate(x0 + mw, y0)
           ctx.scale(-1, 1)
-          drawWorld(ctx, mirrorCam(side, mw, mh), 'cab', { labels: false })
+          drawWorld(ctx, mirrorCam(side, mw, mh), 'cab', { labels: false, light: true })
           ctx.restore()
           ctx.strokeStyle = '#0d0d0d'
           ctx.lineWidth = 5
@@ -581,7 +655,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
       }
 
       // 시험 모드: 위에서 본 내 위치 (북쪽이 위)
-      if (courseRef.current && flags.current.showMap && m !== 'top') {
+      if ((courseRef.current || roadRef.current) && flags.current.showMap && m !== 'top') {
         const land = landRef.current
         const mw = Math.round(Math.min(w * 0.7, h * (land ? 1.5 : 1.2)))
         const mh = Math.round(Math.min(h * (land ? 0.66 : 0.74), mw * 0.8))
@@ -593,7 +667,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
         ctx.roundRect(mx, my, mw, mh, 10)
         ctx.clip()
         ctx.translate(mx, my)
-        drawWorld(ctx, cam, 'top', { labels: false })
+        drawWorld(ctx, cam, 'top', { labels: false, light: true })
         const g = geoRef.current
         const s = car.current
         const c0 = project(cam, { x: s.x + Math.cos(s.yaw) * (g.wheelbase / 2), y: s.y + Math.sin(s.yaw) * (g.wheelbase / 2), z: 0 })
@@ -672,7 +746,11 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`
   const courseIds: CourseId[] = courseOk ? ['gul', 's', 'turn'] : []
 
-  const courseChips = !exam ? null : (
+  const courseChips = road ? (
+    <div className="chips course-chips">
+      <button className={showMap ? 'on map' : 'map'} onClick={() => setShowMap((v) => !v)}>위에서 보기</button>
+    </div>
+  ) : !exam ? null : (
     <div className="chips course-chips">
       {courseIds.map((c) => (
         <button key={c} className={courseId === c ? 'on' : ''} onClick={() => setCourseId(c)}>{COURSE_LABEL[c]}</button>
@@ -737,7 +815,15 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
     </div>
   )
 
-  const hudEl = (
+  const hudEl = road ? (
+    <div className="hud road-hud">
+      <span className="gear">{hud.dir}</span>
+      <b className={hud.limit > 0 && hud.speed > hud.limit + 0.5 ? 'over' : ''}>{Math.round(hud.speed)}</b>
+      <small>km/h</small>
+      {hud.limit > 0 && <span className="limit" title="제한속도(지도 기준)">{hud.limit}</span>}
+      <span className={hud.off ? 'rname off' : 'rname'}>{hud.off ? '도로 이탈' : hud.road}</span>
+    </div>
+  ) : (
     <div className="hud">
       <span className="gear">{hud.dir}</span>
       <span>{hud.speed.toFixed(1)} km/h</span>
@@ -800,6 +886,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
             <button key={g} className={gearUi === g ? 'on' : ''} onPointerDown={(e) => { e.preventDefault(); setGear(g) }}>{g}</button>
           ))}
         </div>
+        {road && <p className="osm-credit">동송터미널 주변 · © OpenStreetMap contributors</p>}
         <div className="cab-pedals two">
           <button className="pedal brake" {...brake}>브레이크</button>
           <button className="pedal fwd" {...accel}>가속 ({gearUi === 'D' ? '전진' : gearUi === 'R' ? '후진' : '중립'})</button>
@@ -839,7 +926,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   )
 }
 
-interface InteriorOpts { steer: number; gear: Gear; hood: boolean; speed: number; color: string; lever: boolean; now: number; dx: number; dy: number }
+interface InteriorOpts { vmax: number; steer: number; gear: Gear; hood: boolean; speed: number; color: string; lever: boolean; now: number; dx: number; dy: number }
 
 /** 운전석 안쪽: 창틀·A필러·계기판·보닛·핸들·두 손·변속 레버 */
 function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o: InteriorOpts) {
@@ -900,7 +987,7 @@ function drawCabInterior(ctx: CanvasRenderingContext2D, w: number, h: number, o:
   const gx = w * 0.3, gy = h * 0.84, gr = h * 0.085
   ctx.fillStyle = '#0a0b08'; ctx.beginPath(); ctx.arc(gx, gy, gr, 0, Math.PI * 2); ctx.fill()
   ctx.strokeStyle = '#6f7a5c'; ctx.lineWidth = 2; ctx.stroke()
-  const frac = Math.min(1, o.speed / 20)
+  const frac = Math.min(1, o.speed / o.vmax)
   const ang = Math.PI * 0.75 + frac * Math.PI * 1.5
   ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 2.5
   ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(ang) * gr * 0.8, gy + Math.sin(ang) * gr * 0.8); ctx.stroke()

@@ -16,7 +16,7 @@ function usePortrait() {
 }
 
 /** 타보기(자유 주행)와 운전 시험이 같은 가로 운전석 화면을 쓴다 */
-export default function Cab({ exam }: { exam?: boolean }) {
+export default function Cab({ exam, road }: { exam?: boolean; road?: boolean }) {
   const { id } = useParams()
   const nav = useNavigate()
   const portrait = usePortrait()
@@ -56,6 +56,7 @@ export default function Cab({ exam }: { exam?: boolean }) {
         landscape
         rotated={portrait}
         exam={exam}
+        road={road}
         headerSlot={<button className="back sm" onClick={() => nav(`/v/${v.id}`)} aria-label="나가기">‹</button>}
       />
       {portrait && <div className="rotate-hint">폰을 옆으로 돌리면 더 크게 보여요</div>}

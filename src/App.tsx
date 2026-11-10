@@ -15,6 +15,7 @@ export default function App() {
       <Route path="/v/:id" element={<VehicleHub />} />
       <Route path="/v/:id/cab" element={<Cab />} />
       <Route path="/v/:id/exam" element={<Cab exam />} />
+      <Route path="/v/:id/road" element={<Cab road />} />
       <Route path="/v/:id/view/:mode" element={<View />} />
       <Route path="/v/:id/compare" element={<Compare />} />
       <Route path="/v/:id/spec" element={<Spec />} />
