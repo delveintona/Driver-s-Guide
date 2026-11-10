@@ -178,7 +178,7 @@ export default function DriveCanvas({ vehicle, mode, landscape, headerSlot, rota
   const [showTrail, setShowTrail] = useState(true)
   const [showPredict, setShowPredict] = useState(true)
   const [showGuide, setShowGuide] = useState(true)
-  const [showMap, setShowMap] = useState(false)
+  const [showMap, setShowMap] = useState(!!exam)
   const [zoom, setZoom] = useState(1)
   const mapZoom = MAP_ZOOM
   const flags = useRef({ showTrail, showPredict, showGuide, showMap, zoom, mapZoom })
